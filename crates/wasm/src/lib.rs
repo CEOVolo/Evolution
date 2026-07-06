@@ -106,6 +106,64 @@ impl Sim {
             .collect()
     }
 
+    /// Average genome traits over the live population as `[speed, metabolism, repro]`
+    /// (zeros if empty). A display readout only — not part of hashed state, so a plain
+    /// float sum is fine here.
+    pub fn avg_traits(&self) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let (mut s, mut m, mut r, mut n) = (0.0f32, 0.0f32, 0.0f32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                s += o.g_speed[i];
+                m += o.g_metab[i];
+                r += o.g_repro[i];
+                n += 1;
+            }
+        }
+        if n == 0 {
+            vec![0.0, 0.0, 0.0]
+        } else {
+            let n = n as f32;
+            vec![s / n, m / n, r / n]
+        }
+    }
+
+    /// Nearest live organism to a world point, for the inspector. Returns
+    /// `[px, py, energy, age, speed, metabolism, repro, r, g, b, id]`, or empty if none.
+    pub fn nearest(&self, wx: f32, wy: f32) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let mut best: i64 = -1;
+        let mut best_d = f32::INFINITY;
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let dx = o.px[i] - wx;
+                let dy = o.py[i] - wy;
+                let d = dx * dx + dy * dy;
+                if d < best_d {
+                    best_d = d;
+                    best = i as i64;
+                }
+            }
+        }
+        if best < 0 {
+            return Vec::new();
+        }
+        let i = best as usize;
+        vec![
+            o.px[i],
+            o.py[i],
+            o.energy[i] as f32,
+            o.age[i] as f32,
+            o.g_speed[i],
+            o.g_metab[i],
+            o.g_repro[i],
+            o.cr[i] as f32,
+            o.cg[i] as f32,
+            o.cb[i] as f32,
+            o.id[i] as f32,
+        ]
+    }
+
     // --- commands (the sole mutation channel) -----------------------------
 
     /// Paint resource into a disc of grid cells (a "food brush").
