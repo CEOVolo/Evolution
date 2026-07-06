@@ -1,0 +1,18 @@
+[package]
+name = "sim-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Deterministic, host-agnostic simulation engine for Evolution."
+
+[lib]
+
+# INTENTIONALLY ZERO external dependencies in Phase 0.
+# The deterministic core hand-rolls its PRNG (and later its transcendentals) so that a
+# dependency bump can never silently change a golden hash. serde and friends may be added
+# behind opt-in features later, never in the default deterministic path.
+[dependencies]
+
+[features]
+default = []

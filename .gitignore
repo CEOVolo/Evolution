@@ -1,0 +1,23 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+
+# Web
+node_modules
+/web/dist
+/web/node_modules
+pkg
+*.wasm.map
+
+# wasm-pack output
+/crates/wasm/pkg
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# NOTE: Cargo.lock IS committed on purpose (reproducible/deterministic builds).

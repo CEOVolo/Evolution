@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are errors everywhere — the determinism lints must not rot.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  native:
+    name: native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86-64 AND arm64: the committed golden hashes must match on both, so any
+        # FMA-contraction / codegen drift across architectures fails the build. This is the
+        # cross-architecture half of the determinism gate.
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test (includes golden determinism gate)
+        run: cargo test --workspace
+
+  wasm-determinism:
+    name: wasm cross-target determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust + wasm target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasmtime
+        run: |
+          curl -LsSf https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Golden determinism under wasm
+        # The SAME golden-hash test (with native-derived pinned hashes), compiled to and run
+        # on wasm via the wasmtime runner. Passing proves the wasm build reproduces the
+        # native golden hashes bit-for-bit — the cross-target half of the determinism gate.
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+        run: cargo test -p replay --target wasm32-wasip1
