@@ -1,13 +1,16 @@
 //! The world and its tick — the one hot function the whole engine is built around.
 //!
-//! Phase 0 is a trivial-but-real mechanistic world: organisms sense a depletable resource
-//! field, steer up its gradient, eat, pay energy costs, die into detritus, and reproduce
-//! with mutation. No behaviour is hard-coded to a role — every trait lives in the genome.
+//! Phase 1: each organism has an evolvable recurrent **brain** (see [`crate::brain`]) that
+//! maps sensors (food, gradient, own energy, nearest neighbour) to actuators (accelerate,
+//! bite, reproduce). Organisms can **prey** on sufficiently-smaller neighbours. No behaviour
+//! is hard-coded to a role — hunting, fleeing, and foraging all emerge from evolved weights.
 //!
-//! Fixed phase order per tick (the ordering is part of the determinism contract):
-//! 1. apply commands, 2. regrow fields, 3. organisms act (index order), 4. apply births.
+//! Fixed phase order per tick: 1. commands, 2. regrow fields, 3. rebuild spatial hash,
+//! 4. organisms act (index order), 5. apply births.
 
+use crate::brain::{self, Weights, N_HID, N_W, OUT_AX, OUT_AY};
 use crate::command::{Command, CommandKind};
+use crate::environment::SpatialHash;
 use crate::event::{DeathCause, Event, EventBatch};
 use crate::math::{canonical_bits, clamp_abs, wrap, Scalar};
 use crate::organism::{Genome, NewOrganism, Organisms};
@@ -19,25 +22,27 @@ pub struct World {
     pub params: WorldParams,
     pub seed: u64,
     pub tick_count: u64,
-    /// Resource field, one integer per grid cell (row-major).
     pub field: Vec<i64>,
     pub orgs: Organisms,
+    hash: SpatialHash,
 }
 
 struct PendingBirth {
     parent_id: u32,
     parent_genome: Genome,
+    parent_weights: Weights,
     px: Scalar,
     py: Scalar,
 }
 
 impl World {
-    /// Create a world and spawn its initial population deterministically from `seed`.
     pub fn new(seed: u64, params: WorldParams) -> Self {
         let cells = params.cell_count();
+        let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
         let mut w = World {
             field: vec![params.field_cap; cells],
             orgs: Organisms::with_capacity(params.initial_population as usize),
+            hash,
             params,
             seed,
             tick_count: 0,
@@ -47,13 +52,17 @@ impl World {
             let px = rng.next_f32_unit() * w.params.width;
             let py = rng.next_f32_unit() * w.params.height;
             let genome = Genome {
-                speed: rng.next_f32_unit(),
+                size: 0.6 + rng.next_f32_unit() * 1.0,
                 metabolism: 0.6 + rng.next_f32_unit() * 0.8,
                 repro: 0.6 + rng.next_f32_unit() * 0.8,
                 r: rng.below(256) as u8,
                 g: rng.below(256) as u8,
                 b: rng.below(256) as u8,
             };
+            let mut weights = brain::zero_weights();
+            for x in weights.iter_mut() {
+                *x = rng.next_f32_signed() * 0.8;
+            }
             w.orgs.insert(NewOrganism {
                 px,
                 py,
@@ -63,17 +72,36 @@ impl World {
                 parent: u32::MAX,
                 birth_tick: 0,
                 genome,
+                weights,
             });
         }
         w
+    }
+
+    /// Reconstruct from snapshot parts (rebuilds the transient spatial hash, which is
+    /// regenerated at the start of every tick anyway).
+    pub fn from_parts(
+        params: WorldParams,
+        seed: u64,
+        tick_count: u64,
+        field: Vec<i64>,
+        orgs: Organisms,
+    ) -> Self {
+        let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
+        World {
+            params,
+            seed,
+            tick_count,
+            field,
+            orgs,
+            hash,
+        }
     }
 
     #[inline]
     pub fn population(&self) -> u32 {
         self.orgs.count
     }
-
-    // --- grid helpers -------------------------------------------------------
 
     #[inline]
     fn cell_of(&self, px: Scalar, py: Scalar) -> (i32, i32) {
@@ -98,17 +126,14 @@ impl World {
         self.field[fi] = if v > cap { cap } else { v };
     }
 
-    // --- tick ---------------------------------------------------------------
-
     pub fn tick(&mut self, cmds: &[Command]) -> EventBatch {
         let mut events = EventBatch::new();
 
-        // 1. Commands are the sole mutation channel.
         for c in cmds {
             self.apply_command(c, &mut events);
         }
 
-        // 2. Fields: regrow toward cap (sources). Depletion (sink) happens during act.
+        // Regrow fields.
         let cap = self.params.field_cap;
         let regrow = self.params.field_regrow;
         for f in self.field.iter_mut() {
@@ -116,8 +141,9 @@ impl World {
             *f = if v > cap { cap } else { v };
         }
 
-        // 3. Organisms act in index order. Births are deferred so newborns are not processed
-        //    this tick and the order is stable.
+        // Rebuild neighbour index from this tick's starting positions.
+        self.hash.rebuild(&self.orgs);
+
         let tick = self.tick_count;
         let mut births: Vec<PendingBirth> = Vec::new();
         let n = self.orgs.capacity();
@@ -128,14 +154,14 @@ impl World {
             self.step_organism(i, tick, &mut births, &mut events);
         }
 
-        // 4. Apply births. Mutation RNG is keyed by (seed, parent_id, tick, birth_seq) so it
-        //    is independent of slot layout and stable as features are added.
         for (seq, b) in births.into_iter().enumerate() {
             let key = splitmix64(b.parent_id as u64)
                 ^ splitmix64(tick.wrapping_mul(0x0100_0000_01b3))
                 ^ splitmix64(seq as u64);
             let mut rng = Pcg32::from_key(self.seed, subsystem::MUTATION, key);
-            let genome = mutate(b.parent_genome, &mut rng, &self.params);
+            let genome = mutate_genome(b.parent_genome, &mut rng, &self.params);
+            let mut weights = b.parent_weights;
+            mutate_weights(&mut weights, &mut rng, &self.params);
             let dx = rng.next_f32_signed() * self.params.spawn_radius;
             let dy = rng.next_f32_signed() * self.params.spawn_radius;
             let px = wrap(b.px + dx, self.params.width);
@@ -149,6 +175,7 @@ impl World {
                 parent: b.parent_id,
                 birth_tick: tick,
                 genome,
+                weights,
             });
             events.events.push(Event::Birth {
                 id,
@@ -168,53 +195,85 @@ impl World {
         births: &mut Vec<PendingBirth>,
         events: &mut EventBatch,
     ) {
-        // --- sense: gradient among the 4 neighbours (ties: here, N, E, S, W) ---
-        let (cx, cy) = self.cell_of(self.orgs.px[i], self.orgs.py[i]);
-        let here = self.field[self.fidx(cx, cy)];
-        // Neighbours in fixed tie-break order: stay, N, E, S, W. Steer toward the strictly
-        // richest cell (ties keep the earlier candidate, so behaviour is order-stable).
-        let candidates = [
-            (here, 0.0f32, 0.0f32),
-            (self.field[self.fidx(cx, cy - 1)], 0.0, -1.0),
-            (self.field[self.fidx(cx + 1, cy)], 1.0, 0.0),
-            (self.field[self.fidx(cx, cy + 1)], 0.0, 1.0),
-            (self.field[self.fidx(cx - 1, cy)], -1.0, 0.0),
-        ];
-        let mut best = here;
-        let mut dirx = 0.0f32;
-        let mut diry = 0.0f32;
-        for &(val, dx, dy) in candidates.iter().skip(1) {
-            if val > best {
-                best = val;
-                dirx = dx;
-                diry = dy;
-            }
-        }
+        let p = &self.params;
+        let cap = p.field_cap as f32;
+        let sx = self.orgs.px[i];
+        let sy = self.orgs.py[i];
+        let size = self.orgs.g_size[i];
 
-        // --- act: damp, steer, clamp, move ---
-        let accel = self.params.steer_accel * self.orgs.g_speed[i];
-        let vmax = self.params.max_speed * self.orgs.g_speed[i];
-        let mut vx = self.orgs.vx[i] * 0.85 + dirx * accel;
-        let mut vy = self.orgs.vy[i] * 0.85 + diry * accel;
-        vx = clamp_abs(vx, vmax);
-        vy = clamp_abs(vy, vmax);
+        // --- sense ---
+        let (cx, cy) = self.cell_of(sx, sy);
+        let food = self.field[self.fidx(cx, cy)] as f32 / cap;
+        let east = self.field[self.fidx(cx + 1, cy)] as f32;
+        let west = self.field[self.fidx(cx - 1, cy)] as f32;
+        let north = self.field[self.fidx(cx, cy - 1)] as f32;
+        let south = self.field[self.fidx(cx, cy + 1)] as f32;
+        let grad_x = (east - west) / cap;
+        let grad_y = (south - north) / cap;
+        let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
+
+        let nn = self.hash.nearest(&self.orgs, i, sx, sy, p.sense_radius);
+        let (nn_dx, nn_dy, nn_relsize) = match nn {
+            Some(j) => (
+                clamp_abs((self.orgs.px[j] - sx) / p.sense_radius, 1.0),
+                clamp_abs((self.orgs.py[j] - sy) / p.sense_radius, 1.0),
+                clamp_abs(self.orgs.g_size[j] - size, 1.0),
+            ),
+            None => (0.0, 0.0, 0.0),
+        };
+
+        let inputs = [
+            1.0, food, grad_x, grad_y, energy_in, nn_dx, nn_dy, nn_relsize,
+        ];
+
+        // --- think ---
+        let w = self.orgs.weights_at(i);
+        let hidden: &mut [f32; N_HID] = (&mut self.orgs.hidden[i * N_HID..i * N_HID + N_HID])
+            .try_into()
+            .unwrap();
+        let out = brain::forward(&w, hidden, &inputs);
+
+        // --- act: accelerate (bigger = more sluggish), clamp, move ---
+        let accel = p.accel_scale / size;
+        let vx = clamp_abs(self.orgs.vx[i] * 0.85 + out[OUT_AX] * accel, p.max_speed);
+        let vy = clamp_abs(self.orgs.vy[i] * 0.85 + out[OUT_AY] * accel, p.max_speed);
         self.orgs.vx[i] = vx;
         self.orgs.vy[i] = vy;
-        self.orgs.px[i] = wrap(self.orgs.px[i] + vx, self.params.width);
-        self.orgs.py[i] = wrap(self.orgs.py[i] + vy, self.params.height);
+        self.orgs.px[i] = wrap(sx + vx, p.width);
+        self.orgs.py[i] = wrap(sy + vy, p.height);
 
-        // --- eat at the new cell (sink) ---
+        // --- eat from the field (sink) ---
         let (ncx, ncy) = self.cell_of(self.orgs.px[i], self.orgs.py[i]);
         let fi = self.fidx(ncx, ncy);
-        let want = ((self.params.eat_rate as f32) * self.orgs.g_metab[i]) as i64;
+        let want = ((p.eat_rate as f32) * self.orgs.g_metab[i]) as i64;
         let intake = want.min(self.field[fi]).max(0);
         self.field[fi] -= intake;
         self.orgs.energy[i] += intake;
 
-        // --- costs ---
+        // --- predation: innate bite of a sufficiently-smaller neighbour in contact ---
+        if let Some(j) = nn {
+            if self.orgs.alive[j] && size >= self.orgs.g_size[j] * p.predation_size_ratio {
+                let dx = self.orgs.px[j] - self.orgs.px[i];
+                let dy = self.orgs.py[j] - self.orgs.py[i];
+                if dx * dx + dy * dy <= p.contact_radius * p.contact_radius {
+                    let victim = self.orgs.energy[j];
+                    if victim > 0 {
+                        let steal = p.bite_amount.min(victim);
+                        self.orgs.energy[j] -= steal;
+                        let gain = steal * p.predation_gain_num / p.predation_gain_den;
+                        self.orgs.energy[i] += gain;
+                        self.orgs.carnivory[i] = (self.orgs.carnivory[i] + 0.3).min(1.0);
+                    }
+                }
+            }
+        }
+
+        // --- metabolism ---
         let sq = vx * vx + vy * vy;
-        let move_cost = (sq * (self.params.move_cost_coeff as f32)) as i64;
-        self.orgs.energy[i] -= self.params.basal_upkeep + move_cost;
+        let move_cost = (sq * (p.move_cost_coeff as f32) * size) as i64;
+        let size_cost = ((size - 1.0) * p.size_upkeep as f32).max(0.0) as i64;
+        self.orgs.energy[i] -= p.basal_upkeep + p.brain_cost + size_cost + move_cost;
+        self.orgs.carnivory[i] *= 0.98;
         self.orgs.age[i] += 1;
 
         // --- death ---
@@ -228,7 +287,7 @@ impl World {
             self.orgs.kill(i);
             return;
         }
-        if self.orgs.age[i] >= self.params.max_age {
+        if self.orgs.age[i] >= p.max_age {
             self.deposit_detritus(fi);
             events.events.push(Event::Death {
                 id: self.orgs.id[i],
@@ -239,13 +298,15 @@ impl World {
             return;
         }
 
-        // --- reproduce (per-organism threshold) ---
-        let threshold = ((self.params.repro_threshold as f32) * self.orgs.g_repro[i]) as i64;
-        if self.orgs.energy[i] >= threshold && self.orgs.count < self.params.max_population {
-            self.orgs.energy[i] -= self.params.repro_cost + self.params.offspring_energy;
+        // --- reproduce (per-organism threshold, brain-gated) ---
+        let threshold = ((p.repro_threshold as f32) * self.orgs.g_repro[i]) as i64;
+        let wants_repro = out[brain::OUT_REPRO] > -0.2;
+        if wants_repro && self.orgs.energy[i] >= threshold && self.orgs.count < p.max_population {
+            self.orgs.energy[i] -= p.repro_cost + p.offspring_energy;
             births.push(PendingBirth {
                 parent_id: self.orgs.id[i],
                 parent_genome: self.orgs.genome_at(i),
+                parent_weights: self.orgs.weights_at(i),
                 px: self.orgs.px[i],
                 py: self.orgs.py[i],
             });
@@ -286,15 +347,15 @@ impl World {
                     parent: u32::MAX,
                     birth_tick: self.tick_count,
                     genome: Genome::base(),
+                    weights: brain::zero_weights(),
                 });
             }
             CommandKind::Kill { cx0, cy0, cx1, cy1 } => {
                 let (xlo, xhi) = ((*cx0).min(*cx1), (*cx0).max(*cx1));
                 let (ylo, yhi) = ((*cy0).min(*cy1), (*cy0).max(*cy1));
-                let n = self.orgs.capacity();
                 let gw = self.params.grid_w as i32;
                 let gh = self.params.grid_h as i32;
-                for i in 0..n {
+                for i in 0..self.orgs.capacity() {
                     if !self.orgs.alive[i] {
                         continue;
                     }
@@ -317,17 +378,12 @@ impl World {
         }
     }
 
-    // --- determinism oracle -------------------------------------------------
-
-    /// A 64-bit fingerprint of the entire world state. Organisms are hashed in stable-id
-    /// order so the result is independent of slot layout. Includes every causally-relevant
-    /// field (floats via canonicalized bits).
+    /// A 64-bit fingerprint of the entire world state — including brain weights and the
+    /// recurrent hidden activations. Organisms are hashed in stable-id order.
     pub fn state_hash(&self) -> u64 {
         let mut h = Fnv::new();
         h.u64(self.tick_count);
         h.u64(self.seed);
-        hash_params(&mut h, &self.params);
-
         h.u32(self.field.len() as u32);
         for &c in &self.field {
             h.i64(c);
@@ -338,32 +394,40 @@ impl World {
             .collect();
         idx.sort_by_key(|&i| self.orgs.id[i]);
         h.u32(idx.len() as u32);
+        let o = &self.orgs;
         for &i in &idx {
-            h.u32(self.orgs.id[i]);
-            h.u32(canonical_bits(self.orgs.px[i]));
-            h.u32(canonical_bits(self.orgs.py[i]));
-            h.u32(canonical_bits(self.orgs.vx[i]));
-            h.u32(canonical_bits(self.orgs.vy[i]));
-            h.i64(self.orgs.energy[i]);
-            h.u32(self.orgs.age[i]);
-            h.u32(self.orgs.parent[i]);
-            h.u64(self.orgs.birth_tick[i]);
-            h.u32(canonical_bits(self.orgs.g_speed[i]));
-            h.u32(canonical_bits(self.orgs.g_metab[i]));
-            h.u32(canonical_bits(self.orgs.g_repro[i]));
-            h.u8(self.orgs.cr[i]);
-            h.u8(self.orgs.cg[i]);
-            h.u8(self.orgs.cb[i]);
+            h.u32(o.id[i]);
+            h.u32(canonical_bits(o.px[i]));
+            h.u32(canonical_bits(o.py[i]));
+            h.u32(canonical_bits(o.vx[i]));
+            h.u32(canonical_bits(o.vy[i]));
+            h.i64(o.energy[i]);
+            h.u32(o.age[i]);
+            h.u32(o.parent[i]);
+            h.u64(o.birth_tick[i]);
+            h.u32(canonical_bits(o.g_size[i]));
+            h.u32(canonical_bits(o.g_metab[i]));
+            h.u32(canonical_bits(o.g_repro[i]));
+            h.u8(o.cr[i]);
+            h.u8(o.cg[i]);
+            h.u8(o.cb[i]);
+            h.u32(canonical_bits(o.carnivory[i]));
+            for k in 0..N_W {
+                h.u32(canonical_bits(o.weights[i * N_W + k]));
+            }
+            for k in 0..N_HID {
+                h.u32(canonical_bits(o.hidden[i * N_HID + k]));
+            }
         }
         h.finish()
     }
 }
 
-fn mutate(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
+fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
     let rate = p.mutation_rate;
     let d = p.mutation_delta;
     if rng.chance(rate) {
-        g.speed = (g.speed + rng.next_f32_signed() * d).clamp(0.0, 1.0);
+        g.size = (g.size + rng.next_f32_signed() * d).clamp(0.4, 2.2);
     }
     if rng.chance(rate) {
         g.metabolism = (g.metabolism + rng.next_f32_signed() * d).clamp(0.3, 2.0);
@@ -383,13 +447,21 @@ fn mutate(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
     g
 }
 
+fn mutate_weights(w: &mut Weights, rng: &mut Pcg32, p: &WorldParams) {
+    let rate = p.mutation_rate;
+    let d = p.weight_mut_delta;
+    for x in w.iter_mut() {
+        if rng.chance(rate) {
+            *x = (*x + rng.next_f32_signed() * d).clamp(-4.0, 4.0);
+        }
+    }
+}
+
 #[inline]
 fn mut_u8(v: u8, rng: &mut Pcg32) -> u8 {
     let delta = rng.below(21) as i32 - 10;
     (v as i32 + delta).clamp(0, 255) as u8
 }
-
-// --- FNV-1a 64-bit, over a canonical little-endian byte stream ---
 
 struct Fnv(u64);
 
@@ -427,31 +499,6 @@ impl Fnv {
     }
 }
 
-fn hash_params(h: &mut Fnv, p: &WorldParams) {
-    h.u32(canonical_bits(p.width));
-    h.u32(canonical_bits(p.height));
-    h.u32(p.grid_w);
-    h.u32(p.grid_h);
-    h.i64(p.field_cap);
-    h.i64(p.field_regrow);
-    h.u32(canonical_bits(p.max_speed));
-    h.u32(canonical_bits(p.steer_accel));
-    h.i64(p.move_cost_coeff);
-    h.i64(p.basal_upkeep);
-    h.i64(p.eat_rate);
-    h.i64(p.death_deposit);
-    h.u32(p.max_age);
-    h.i64(p.repro_threshold);
-    h.i64(p.repro_cost);
-    h.i64(p.offspring_energy);
-    h.u32(canonical_bits(p.spawn_radius));
-    h.u32(canonical_bits(p.mutation_rate));
-    h.u32(canonical_bits(p.mutation_delta));
-    h.u32(p.initial_population);
-    h.i64(p.initial_energy);
-    h.u32(p.max_population);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,27 +513,22 @@ mod tests {
 
     #[test]
     fn deterministic_same_seed() {
-        let a = run(12345, 500);
-        let b = run(12345, 500);
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(run(12345, 400).state_hash(), run(12345, 400).state_hash());
     }
 
     #[test]
     fn different_seed_diverges() {
-        let a = run(1, 500);
-        let b = run(2, 500);
-        assert_ne!(a.state_hash(), b.state_hash());
+        assert_ne!(run(1, 400).state_hash(), run(2, 400).state_hash());
     }
 
     #[test]
     fn world_is_alive_and_dynamic() {
-        // Sanity: the default preset should not instantly die out, and should show births.
         let mut w = World::new(777, WorldParams::default());
-        let mut total_births = 0usize;
+        let mut births = 0usize;
         for _ in 0..400 {
-            total_births += w.tick(&[]).births();
+            births += w.tick(&[]).births();
         }
         assert!(w.population() > 0, "world went extinct");
-        assert!(total_births > 0, "no reproduction happened");
+        assert!(births > 0, "no reproduction happened");
     }
 }

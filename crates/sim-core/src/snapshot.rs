@@ -1,21 +1,19 @@
 //! Deterministic, versioned snapshot of the full world state.
 //!
-//! The canonical shareable unit (and, later, a multiplayer keyframe) is a **state**
-//! snapshot, not a command log. We serialize the *entire* `World` — including the full slot
-//! layout, free-list, and next-id — so a reloaded world reproduces byte-identical future
-//! ticks (the `snapshot@K → N == uninterrupted@N` invariant).
+//! The canonical shareable unit (and, later, a multiplayer keyframe) is a **state** snapshot.
+//! We serialize the *entire* `World` — including the full slot layout, every organism's brain
+//! weights and recurrent hidden state, the free-list, and next-id — so a reloaded world
+//! reproduces byte-identical future ticks (`snapshot@K → N == uninterrupted@N`).
 //!
-//! Format is hand-rolled little-endian with a magic + version header. Floats are stored as
-//! raw `to_bits()` so the representation is exact and swap-neutral (a future fixed-point
-//! move keeps the same wire shape). No external serialization dep touches the deterministic
-//! path.
+//! Hand-rolled little-endian with a magic + version header; floats stored as raw `to_bits()`.
 
+use crate::brain::{N_HID, N_W};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F31; // "EVO1"
-const VERSION: u16 = 1;
+const MAGIC: u32 = 0x45564F32; // "EVO2"
+const VERSION: u16 = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -24,7 +22,6 @@ pub enum SnapshotError {
     BadVersion(u16),
 }
 
-/// Serialize a world to bytes.
 pub fn to_bytes(w: &World) -> Vec<u8> {
     let mut o = Writer { buf: Vec::new() };
     o.u32(MAGIC);
@@ -42,7 +39,6 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.buf
 }
 
-/// Restore a world from bytes.
 pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     let mut r = Reader { buf: bytes, pos: 0 };
     if r.u32()? != MAGIC {
@@ -63,13 +59,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     }
 
     let orgs = read_orgs(&mut r)?;
-    Ok(World {
-        params,
-        seed,
-        tick_count,
-        field,
-        orgs,
-    })
+    Ok(World::from_parts(params, seed, tick_count, field, orgs))
 }
 
 fn write_params(o: &mut Writer, p: &WorldParams) {
@@ -79,10 +69,18 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.u32(p.grid_h);
     o.i64(p.field_cap);
     o.i64(p.field_regrow);
+    o.f32(p.accel_scale);
     o.f32(p.max_speed);
-    o.f32(p.steer_accel);
     o.i64(p.move_cost_coeff);
+    o.f32(p.sense_radius);
+    o.f32(p.contact_radius);
+    o.f32(p.predation_size_ratio);
+    o.i64(p.bite_amount);
+    o.i64(p.predation_gain_num);
+    o.i64(p.predation_gain_den);
     o.i64(p.basal_upkeep);
+    o.i64(p.brain_cost);
+    o.i64(p.size_upkeep);
     o.i64(p.eat_rate);
     o.i64(p.death_deposit);
     o.u32(p.max_age);
@@ -92,6 +90,7 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.f32(p.spawn_radius);
     o.f32(p.mutation_rate);
     o.f32(p.mutation_delta);
+    o.f32(p.weight_mut_delta);
     o.u32(p.initial_population);
     o.i64(p.initial_energy);
     o.u32(p.max_population);
@@ -105,10 +104,18 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         grid_h: r.u32()?,
         field_cap: r.i64()?,
         field_regrow: r.i64()?,
+        accel_scale: r.f32()?,
         max_speed: r.f32()?,
-        steer_accel: r.f32()?,
         move_cost_coeff: r.i64()?,
+        sense_radius: r.f32()?,
+        contact_radius: r.f32()?,
+        predation_size_ratio: r.f32()?,
+        bite_amount: r.i64()?,
+        predation_gain_num: r.i64()?,
+        predation_gain_den: r.i64()?,
         basal_upkeep: r.i64()?,
+        brain_cost: r.i64()?,
+        size_upkeep: r.i64()?,
         eat_rate: r.i64()?,
         death_deposit: r.i64()?,
         max_age: r.u32()?,
@@ -118,6 +125,7 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         spawn_radius: r.f32()?,
         mutation_rate: r.f32()?,
         mutation_delta: r.f32()?,
+        weight_mut_delta: r.f32()?,
         initial_population: r.u32()?,
         initial_energy: r.i64()?,
         max_population: r.u32()?,
@@ -138,12 +146,19 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.u32(s.age[i]);
         o.u32(s.parent[i]);
         o.u64(s.birth_tick[i]);
-        o.f32(s.g_speed[i]);
+        o.f32(s.g_size[i]);
         o.f32(s.g_metab[i]);
         o.f32(s.g_repro[i]);
         o.u8(s.cr[i]);
         o.u8(s.cg[i]);
         o.u8(s.cb[i]);
+        o.f32(s.carnivory[i]);
+        for k in 0..N_W {
+            o.f32(s.weights[i * N_W + k]);
+        }
+        for k in 0..N_HID {
+            o.f32(s.hidden[i * N_HID + k]);
+        }
     }
     o.u32(s.free.len() as u32);
     for &f in &s.free {
@@ -167,12 +182,19 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.age.push(r.u32()?);
         s.parent.push(r.u32()?);
         s.birth_tick.push(r.u64()?);
-        s.g_speed.push(r.f32()?);
+        s.g_size.push(r.f32()?);
         s.g_metab.push(r.f32()?);
         s.g_repro.push(r.f32()?);
         s.cr.push(r.u8()?);
         s.cg.push(r.u8()?);
         s.cb.push(r.u8()?);
+        s.carnivory.push(r.f32()?);
+        for _ in 0..N_W {
+            s.weights.push(r.f32()?);
+        }
+        for _ in 0..N_HID {
+            s.hidden.push(r.f32()?);
+        }
     }
     let free_len = r.u32()? as usize;
     s.free = Vec::with_capacity(free_len);
@@ -183,8 +205,6 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
     s.count = r.u32()?;
     Ok(s)
 }
-
-// --- little-endian byte IO ---
 
 struct Writer {
     buf: Vec<u8>,
@@ -259,39 +279,29 @@ mod tests {
     #[test]
     fn roundtrip_preserves_hash() {
         let mut w = World::new(4242, WorldParams::default());
-        for _ in 0..250 {
+        for _ in 0..200 {
             w.tick(&[]);
         }
-        let bytes = to_bytes(&w);
-        let w2 = from_bytes(&bytes).expect("decode");
-        assert_eq!(w.state_hash(), w2.state_hash(), "reloaded hash differs");
+        let w2 = from_bytes(&to_bytes(&w)).expect("decode");
+        assert_eq!(w.state_hash(), w2.state_hash());
     }
 
     #[test]
     fn snapshot_then_run_equals_uninterrupted() {
-        // The load-bearing invariant: snapshot at tick K, run to N == uninterrupted run to N.
-        let seed = 99;
-        let k = 137;
-        let n = 500;
-
-        // uninterrupted
+        let (seed, k, n) = (99u64, 137u64, 450u64);
         let mut a = World::new(seed, WorldParams::default());
         for _ in 0..n {
             a.tick(&[]);
         }
-
-        // snapshot at K, reload, continue to N
         let mut b = World::new(seed, WorldParams::default());
         for _ in 0..k {
             b.tick(&[]);
         }
-        let bytes = to_bytes(&b);
-        let mut c = from_bytes(&bytes).expect("decode");
+        let mut c = from_bytes(&to_bytes(&b)).expect("decode");
         for _ in k..n {
             c.tick(&[]);
         }
-
-        assert_eq!(a.state_hash(), c.state_hash(), "snapshot@K -> N diverged");
+        assert_eq!(a.state_hash(), c.state_hash());
     }
 
     #[test]

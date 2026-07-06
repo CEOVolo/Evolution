@@ -1,5 +1,5 @@
 // Legible Canvas prototype over the deterministic sim-core (wasm).
-// Rough on purpose (Canvas2D, Phase-0 genome — no neural brains yet), but self-explanatory.
+// Phase 1: cells have evolvable neural brains and can prey on smaller cells.
 
 import init, { Sim } from "../pkg/evolution.js";
 
@@ -27,10 +27,11 @@ async function main() {
 
   const $ = (id) => document.getElementById(id);
 
-  // --- controls ---------------------------------------------------------
+  // --- controls ---
   let playing = true;
   let speed = 4;
   let brush = "food";
+  let predatorsAnnounced = false;
 
   const playBtn = $("play");
   playBtn.onclick = () => {
@@ -41,6 +42,7 @@ async function main() {
   $("reset").onclick = () => {
     sim.reset((Math.random() * 0xffffffff) >>> 0);
     popHist.length = 0;
+    predatorsAnnounced = false;
     toast("🌍 Новый мир засеян");
   };
   $("speed").oninput = (e) => (speed = +e.target.value);
@@ -51,9 +53,10 @@ async function main() {
 
   function worldFromEvent(e) {
     const rect = canvas.getBoundingClientRect();
-    const wx = ((e.clientX - rect.left) / rect.width) * worldW;
-    const wy = ((e.clientY - rect.top) / rect.height) * worldH;
-    return [wx, wy];
+    return [
+      ((e.clientX - rect.left) / rect.width) * worldW,
+      ((e.clientY - rect.top) / rect.height) * worldH,
+    ];
   }
   function applyBrush(e) {
     const [wx, wy] = worldFromEvent(e);
@@ -70,7 +73,7 @@ async function main() {
   });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // --- inspector (hover) ------------------------------------------------
+  // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
   function inspectHover(e) {
@@ -83,23 +86,25 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, spd, metab, repro, r, g, b, id] = n;
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn] = n;
+    const diet = carn > 0.15 ? "🔴 хищник" : "🌿 травоядное";
     inspectBody.innerHTML = `
       <div class="row" style="margin:0 0 8px">
-        <span><span class="swatch" style="background:rgb(${r|0},${g|0},${b|0})"></span> клетка #${id | 0}</span>
+        <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}</span>
         <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
       </div>
+      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${diet}</b></div>
       <div class="row mono" style="margin:4px 0"><span>энергия</span><b>${energy | 0}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>ген «скорость»</span><b>${spd.toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>`;
   }
 
-  // --- population chart + trait bars ------------------------------------
+  // --- population chart + trait bars ---
   const chart = $("chart");
   const cctx = chart.getContext("2d");
   const popHist = [];
-  const POP_MAX_SAMPLES = 272;
+  const POP_MAX = 272;
 
   function drawChart() {
     cctx.clearRect(0, 0, chart.width, chart.height);
@@ -107,7 +112,7 @@ async function main() {
     const max = Math.max(...popHist, 1);
     cctx.beginPath();
     for (let i = 0; i < popHist.length; i++) {
-      const x = (i / (POP_MAX_SAMPLES - 1)) * chart.width;
+      const x = (i / (POP_MAX - 1)) * chart.width;
       const y = chart.height - (popHist[i] / max) * (chart.height - 4) - 2;
       i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
     }
@@ -123,24 +128,26 @@ async function main() {
     $("b-" + id).style.width = Math.max(0, Math.min(1, frac)) * 100 + "%";
   };
   function updateTraits() {
-    const [spd, metab, repro] = sim.avg_traits();
-    $("a-speed").textContent = spd.toFixed(3);
+    const [size, metab, repro, carn] = sim.avg_traits();
+    $("a-size").textContent = size.toFixed(3);
     $("a-metab").textContent = metab.toFixed(3);
     $("a-repro").textContent = repro.toFixed(3);
-    bar("speed", spd); // 0..1
-    bar("metab", (metab - 0.3) / (2.0 - 0.3));
-    bar("repro", (repro - 0.5) / (1.5 - 0.5));
+    $("a-carn").textContent = carn.toFixed(3);
+    bar("size", (size - 0.4) / 1.8);
+    bar("metab", (metab - 0.3) / 1.7);
+    bar("repro", (repro - 0.5) / 1.0);
+    bar("carn", carn);
   }
 
-  // --- toasts (plain-language narration) --------------------------------
+  // --- toasts ---
   const toastsEl = $("toasts");
   function toast(text) {
     const d = document.createElement("div");
     d.className = "toast";
     d.textContent = text;
     toastsEl.appendChild(d);
-    setTimeout(() => d.classList.add("fade"), 3200);
-    setTimeout(() => d.remove(), 3900);
+    setTimeout(() => d.classList.add("fade"), 3400);
+    setTimeout(() => d.remove(), 4100);
   }
   let lastNarr = performance.now();
   let lastNarrPop = sim.population();
@@ -148,16 +155,20 @@ async function main() {
     const now = performance.now();
     if (now - lastNarr < 2500) return;
     const pop = sim.population();
+    const carn = sim.avg_traits()[3];
     const prev = lastNarrPop || 1;
     const ratio = pop / prev;
-    if (pop === 0) toast("💀 Мир вымер — попробуй «Новый мир» или подсыпь еды");
+    if (!predatorsAnnounced && carn > 0.03 && pop > 50) {
+      toast("🦈 Сами собой появились хищники!");
+      predatorsAnnounced = true;
+    } else if (pop === 0) toast("💀 Мир вымер — жми «Новый мир» или подсыпь еды");
     else if (ratio > 1.35) toast(`🌱 Вспышка размножения (+${(pop - prev).toLocaleString()})`);
     else if (ratio < 0.7) toast(`💀 Массовое вымирание (−${(prev - pop).toLocaleString()})`);
     lastNarr = now;
     lastNarrPop = pop;
   }
 
-  // --- render loop ------------------------------------------------------
+  // --- render loop ---
   const tickEl = $("s-tick");
   const popEl = $("s-pop");
   let frame = 0;
@@ -178,19 +189,28 @@ async function main() {
 
     const p = sim.positions();
     const c = sim.colors();
-    for (let i = 0, k = 0; i < p.length; i += 2, k += 3) {
+    const sz = sim.sizes();
+    const cn = sim.carnivory();
+    for (let i = 0, k = 0, m = 0; i < p.length; i += 2, k += 3, m++) {
+      const rad = 1.1 + sz[m] * 1.3;
+      const x = p[i] * sxk;
+      const y = p[i + 1] * syk;
+      if (cn[m] > 40) {
+        ctx.fillStyle = "rgba(255,60,60,0.85)";
+        const rr = rad + 1.3;
+        ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+      }
       ctx.fillStyle = `rgb(${c[k]},${c[k + 1]},${c[k + 2]})`;
-      ctx.fillRect(p[i] * sxk - 1.3, p[i + 1] * syk - 1.3, 2.6, 2.6);
+      ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
     }
   }
 
   function loop() {
     if (playing) sim.tick(speed);
     draw();
-
     if ((frame & 3) === 0) {
       popHist.push(sim.population());
-      if (popHist.length > POP_MAX_SAMPLES) popHist.shift();
+      if (popHist.length > POP_MAX) popHist.shift();
       drawChart();
     }
     if ((frame & 7) === 0) {
@@ -203,7 +223,6 @@ async function main() {
     requestAnimationFrame(loop);
   }
 
-  // Debug/verification hook (rAF is throttled when the tab is backgrounded).
   window.__evo = {
     sim,
     step: (n) => {
@@ -213,7 +232,7 @@ async function main() {
     },
   };
 
-  toast("👋 Это живой мир. Наведи на точку, покрути ползунки, посыпь еды.");
+  toast("👋 Живой мир с мозгами. Наведи на клетку, покрути ползунки, посыпь еды.");
   loop();
 }
 

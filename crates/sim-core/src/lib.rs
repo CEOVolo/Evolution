@@ -25,7 +25,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod brain;
 pub mod command;
+pub mod environment;
 pub mod event;
 pub mod math;
 pub mod organism;

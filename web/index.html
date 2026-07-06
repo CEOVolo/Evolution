@@ -84,10 +84,11 @@
         <div class="card">
           <h2>Что я вижу?</h2>
           <div class="explain">
-            Каждая <b>точка</b> — живая клетка. <b>Зелёная дымка</b> — еда.
-            Клетки ищут еду, тратят энергию на движение, <b>размножаются с мутациями</b> и умирают.
-            Цвет клетки <b>наследуется</b>, поэтому пятна одного цвета — это «семьи»/зарождающиеся виды.
-            Никто не задавал заранее, что получится — правила простые, итог каждый раз разный.
+            Каждая <b>точка</b> — живая клетка со своим <b>мозгом-нейросетью</b>: он сам решает,
+            куда плыть, есть ли и <b>охотиться ли</b>. <b>Зелёная дымка</b> — еда.
+            Клетки крупнее могут <b>съесть тех, кто мельче</b> (хищники — с красным ободком).
+            Всё — цвет, размер, поведение — <b>наследуется и мутирует</b>. Никто не задавал заранее,
+            кто станет травоядным, а кто хищником — это вырастает само.
           </div>
         </div>
 
@@ -96,7 +97,9 @@
           <div class="legend">
             <span><span class="sw" style="background:#1a7d2e"></span>дымка — еда (ярче = больше)</span>
             <span><span class="sw" style="background:#e0e0e0"></span>точка — живая клетка</span>
-            <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет точки — её гены</span>
+            <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — её гены (наследуется)</span>
+            <span><span class="sw" style="background:#cfcfcf"></span>крупнее точка — крупнее тело</span>
+            <span><span class="sw" style="background:#ff3c3c"></span>красный ободок — сейчас хищничает</span>
           </div>
         </div>
 
@@ -132,9 +135,10 @@
         <div class="card">
           <h2>Эволюция в цифрах <span class="help" title="Средние гены живых клеток. Смотри, как они уплывают со временем — это и есть естественный отбор в действии.">ⓘ</span></h2>
           <div class="bars">
-            <div class="bar"><div class="lab"><span>скорость</span><b id="a-speed">—</b></div><div class="track"><div id="b-speed"></div></div></div>
+            <div class="bar"><div class="lab"><span>размер тела</span><b id="a-size">—</b></div><div class="track"><div id="b-size"></div></div></div>
             <div class="bar"><div class="lab"><span>обмен веществ</span><b id="a-metab">—</b></div><div class="track"><div id="b-metab"></div></div></div>
             <div class="bar"><div class="lab"><span>порог размножения</span><b id="a-repro">—</b></div><div class="track"><div id="b-repro"></div></div></div>
+            <div class="bar"><div class="lab"><span>хищность 🔴</span><b id="a-carn">—</b></div><div class="track"><div id="b-carn"></div></div></div>
           </div>
         </div>
 

@@ -1,8 +1,8 @@
 //! Browser host for `sim-core` via `wasm-bindgen`.
 //!
-//! A thin wrapper exposing the deterministic engine to JavaScript: advance the world,
-//! read render buffers, and issue commands (the single mutation channel). All simulation
-//! logic lives in `sim-core`; this crate only marshals data across the wasm boundary.
+//! A thin wrapper exposing the deterministic engine to JavaScript: advance the world, read
+//! render buffers, and issue commands (the single mutation channel). All simulation logic
+//! lives in `sim-core`; this crate only marshals data across the wasm boundary.
 
 use sim_core::{Command, CommandKind, ParamId, World, WorldParams};
 use wasm_bindgen::prelude::*;
@@ -10,7 +10,6 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub struct Sim {
     world: World,
-    /// Commands queued from JS, applied on the next `tick`.
     pending: Vec<Command>,
 }
 
@@ -25,7 +24,6 @@ impl Sim {
         }
     }
 
-    /// Advance the world by `n` ticks. Queued commands are applied on the first tick.
     pub fn tick(&mut self, n: u32) {
         if n == 0 {
             return;
@@ -63,13 +61,11 @@ impl Sim {
         self.world.params.grid_h
     }
 
-    /// 16-hex-digit state fingerprint (string, since a u64 can't round-trip through a JS
-    /// number). Handy for eyeballing determinism from the UI.
     pub fn state_hash(&self) -> String {
         format!("{:016x}", self.world.state_hash())
     }
 
-    /// Live organism positions as `[x0, y0, x1, y1, ...]` in world coordinates.
+    /// Live organism positions `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn positions(&self) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize * 2);
@@ -82,7 +78,7 @@ impl Sim {
         v
     }
 
-    /// Live organism colours as `[r0, g0, b0, r1, g1, b1, ...]`, matching `positions` order.
+    /// Live organism colours `[r,g,b, ...]`, matching `positions` order.
     pub fn colors(&self) -> Vec<u8> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize * 3);
@@ -96,7 +92,31 @@ impl Sim {
         v
     }
 
-    /// Resource field normalized to `0..=255`, row-major (`grid_w * grid_h`).
+    /// Live organism body sizes, matching `positions` order (for dot radius).
+    pub fn sizes(&self) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push(o.g_size[i]);
+            }
+        }
+        v
+    }
+
+    /// Live organism "carnivory" `0..=255`, matching `positions` order (predator tint).
+    pub fn carnivory(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push((o.carnivory[i].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        v
+    }
+
+    /// Resource field normalized to `0..=255`, row-major.
     pub fn field(&self) -> Vec<u8> {
         let cap = self.world.params.field_cap.max(1);
         self.world
@@ -106,30 +126,29 @@ impl Sim {
             .collect()
     }
 
-    /// Average genome traits over the live population as `[speed, metabolism, repro]`
-    /// (zeros if empty). A display readout only — not part of hashed state, so a plain
-    /// float sum is fine here.
+    /// Population averages `[size, metabolism, repro, carnivory]` (display only).
     pub fn avg_traits(&self) -> Vec<f32> {
         let o = &self.world.orgs;
-        let (mut s, mut m, mut r, mut n) = (0.0f32, 0.0f32, 0.0f32, 0u32);
+        let (mut sz, mut m, mut r, mut cn, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0u32);
         for i in 0..o.capacity() {
             if o.alive[i] {
-                s += o.g_speed[i];
+                sz += o.g_size[i];
                 m += o.g_metab[i];
                 r += o.g_repro[i];
+                cn += o.carnivory[i];
                 n += 1;
             }
         }
         if n == 0 {
-            vec![0.0, 0.0, 0.0]
+            vec![0.0, 0.0, 0.0, 0.0]
         } else {
             let n = n as f32;
-            vec![s / n, m / n, r / n]
+            vec![sz / n, m / n, r / n, cn / n]
         }
     }
 
     /// Nearest live organism to a world point, for the inspector. Returns
-    /// `[px, py, energy, age, speed, metabolism, repro, r, g, b, id]`, or empty if none.
+    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, id, carnivory]` or empty.
     pub fn nearest(&self, wx: f32, wy: f32) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut best: i64 = -1;
@@ -154,19 +173,19 @@ impl Sim {
             o.py[i],
             o.energy[i] as f32,
             o.age[i] as f32,
-            o.g_speed[i],
+            o.g_size[i],
             o.g_metab[i],
             o.g_repro[i],
             o.cr[i] as f32,
             o.cg[i] as f32,
             o.cb[i] as f32,
             o.id[i] as f32,
+            o.carnivory[i],
         ]
     }
 
     // --- commands (the sole mutation channel) -----------------------------
 
-    /// Paint resource into a disc of grid cells (a "food brush").
     pub fn inject(&mut self, cx: i32, cy: i32, radius: i32, amount: i32) {
         self.pending
             .push(Command::local(CommandKind::InjectSubstance {
@@ -177,7 +196,6 @@ impl Sim {
             }));
     }
 
-    /// Spawn an organism at a grid cell.
     pub fn spawn(&mut self, cx: i32, cy: i32, energy: i32) {
         self.pending.push(Command::local(CommandKind::Spawn {
             cx,
@@ -186,7 +204,6 @@ impl Sim {
         }));
     }
 
-    /// Kill everything in an inclusive grid rectangle.
     pub fn kill(&mut self, cx0: i32, cy0: i32, cx1: i32, cy1: i32) {
         self.pending
             .push(Command::local(CommandKind::Kill { cx0, cy0, cx1, cy1 }));
@@ -204,11 +221,10 @@ impl Sim {
         self.set_param(ParamId::EatRate, raw as i64);
     }
 
-    pub fn set_max_speed(&mut self, thousandths: i32) {
-        self.set_param(ParamId::MaxSpeed, thousandths as i64);
+    pub fn set_bite_amount(&mut self, raw: i32) {
+        self.set_param(ParamId::BiteAmount, raw as i64);
     }
 
-    /// Reset to a fresh world with a new seed (current params retained).
     pub fn reset(&mut self, seed: u32) {
         self.pending
             .push(Command::local(CommandKind::Reset { seed: seed as u64 }));
