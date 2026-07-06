@@ -19,6 +19,7 @@ pub fn splitmix64(mut z: u64) -> u64 {
 pub mod subsystem {
     pub const SPAWN: u64 = 1;
     pub const MUTATION: u64 = 2;
+    pub const BLOOM: u64 = 3;
 }
 
 /// PCG-XSH-RR 64/32. Small, portable, fully deterministic.

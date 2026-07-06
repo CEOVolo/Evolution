@@ -13,8 +13,8 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F33; // "EVO3"
-const VERSION: u16 = 3;
+const MAGIC: u32 = 0x45564F34; // "EVO4"
+const VERSION: u16 = 4;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -34,6 +34,15 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.u32(w.field.len() as u32);
     for &c in &w.field {
         o.i64(c);
+    }
+    o.u32(w.signal.len() as u32);
+    for &s in &w.signal {
+        o.i64(s);
+    }
+    o.u32(w.blooms.len() as u32);
+    for &(bx, by) in &w.blooms {
+        o.f32(bx);
+        o.f32(by);
     }
 
     write_orgs(&mut o, &w.orgs);
@@ -58,9 +67,21 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..flen {
         field.push(r.i64()?);
     }
+    let slen = r.u32()? as usize;
+    let mut signal = Vec::with_capacity(slen);
+    for _ in 0..slen {
+        signal.push(r.i64()?);
+    }
+    let blen = r.u32()? as usize;
+    let mut blooms = Vec::with_capacity(blen);
+    for _ in 0..blen {
+        blooms.push((r.f32()?, r.f32()?));
+    }
 
     let orgs = read_orgs(&mut r)?;
-    Ok(World::from_parts(params, seed, tick_count, field, orgs))
+    Ok(World::from_parts(
+        params, seed, tick_count, field, signal, blooms, orgs,
+    ))
 }
 
 fn write_params(o: &mut Writer, p: &WorldParams) {
@@ -70,6 +91,11 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.u32(p.grid_h);
     o.i64(p.field_cap);
     o.i64(p.field_regrow);
+    o.u32(p.day_period);
+    o.u32(p.bloom_count);
+    o.i64(p.bloom_boost);
+    o.i64(p.emit_scale);
+    o.i64(p.signal_cap);
     o.f32(p.accel_scale);
     o.f32(p.max_speed);
     o.i64(p.move_cost_coeff);
@@ -107,6 +133,11 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         grid_h: r.u32()?,
         field_cap: r.i64()?,
         field_regrow: r.i64()?,
+        day_period: r.u32()?,
+        bloom_count: r.u32()?,
+        bloom_boost: r.i64()?,
+        emit_scale: r.i64()?,
+        signal_cap: r.i64()?,
         accel_scale: r.f32()?,
         max_speed: r.f32()?,
         move_cost_coeff: r.i64()?,

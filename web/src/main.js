@@ -223,12 +223,14 @@ async function main() {
 
   function draw() {
     const f = sim.field();
+    const sg = sim.signal();
     const d = fimg.data;
     for (let i = 0, j = 0; i < f.length; i++, j += 4) {
       const v = f[i];
-      d[j] = 12;
+      const s = sg[i];
+      d[j] = 12 + s * 0.12;
       d[j + 1] = 26 + v * 0.62;
-      d[j + 2] = 22;
+      d[j + 2] = 22 + s * 0.7;
       d[j + 3] = 255;
     }
     fctx.putImageData(fimg, 0, 0);
@@ -251,6 +253,23 @@ async function main() {
       ctx.fillStyle = `rgb(${c[k]},${c[k + 1]},${c[k + 2]})`;
       ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
     }
+
+    // drifting bloom (food-patch) centres
+    const bl = sim.blooms();
+    ctx.strokeStyle = "rgba(255,235,150,0.22)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < bl.length; i += 2) {
+      ctx.beginPath();
+      ctx.arc(bl[i] * sxk, bl[i + 1] * syk, 45 * sxk, 0, 6.283);
+      ctx.stroke();
+    }
+
+    // night dimming (the day/night cycle, visible)
+    const dl = sim.daylight();
+    if (dl < 1) {
+      ctx.fillStyle = `rgba(6,10,28,${(1 - dl) * 0.4})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
   }
 
   function loop() {
@@ -264,6 +283,8 @@ async function main() {
     if ((frame & 7) === 0) {
       tickEl.textContent = sim.tick_count().toLocaleString();
       popEl.textContent = sim.population().toLocaleString();
+      const dl = sim.daylight();
+      $("a-day").textContent = (dl > 0.5 ? "☀️ " : "🌙 ") + dl.toFixed(2);
       updateTraits();
       updateHealth();
       updateSpecies();

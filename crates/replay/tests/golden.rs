@@ -18,16 +18,16 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 #[test]
 fn golden_hashes() {
     // Phase-1 behaviour (evolvable brains + predation). Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0x3d50_23b9_e826_0778, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0x9251_a75a_440f_3412, "seed=1 tick=500");
+    assert_eq!(hash_after(1, 100), 0x84d1_6407_5865_ec34, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x5776_253f_fff2_c486, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x132f_b445_23df_f9e7,
+        0x3d69_c5dc_5ca1_d300,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x5710_3f45_bd15_9094,
+        0xd4f1_f7e5_786a_b8f4,
         "seed=2 tick=2000"
     );
 }

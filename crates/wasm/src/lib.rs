@@ -141,6 +141,31 @@ impl Sim {
             .collect()
     }
 
+    /// Day/night–season light level `0..=1`.
+    pub fn daylight(&self) -> f32 {
+        self.world.daylight()
+    }
+
+    /// Signal/pheromone field normalized to `0..=255`, row-major.
+    pub fn signal(&self) -> Vec<u8> {
+        let cap = self.world.params.signal_cap.max(1);
+        self.world
+            .signal
+            .iter()
+            .map(|&s| ((s.max(0) * 255) / cap) as u8)
+            .collect()
+    }
+
+    /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
+    pub fn blooms(&self) -> Vec<f32> {
+        let mut v = Vec::with_capacity(self.world.blooms.len() * 2);
+        for &(x, y) in &self.world.blooms {
+            v.push(x);
+            v.push(y);
+        }
+        v
+    }
+
     /// `[size, metabolism, repro, carnivory]` averages (display only).
     pub fn avg_traits(&self) -> Vec<f32> {
         let o = &self.world.orgs;

@@ -1,12 +1,14 @@
 //! The world and its tick — the one hot function the whole engine is built around.
 //!
-//! Phase 1+: each organism has an evolvable **growing** brain ([`crate::brain`]) that maps
-//! sensors to actuators; brains gain structure over generations and are metabolically taxed
-//! by their complexity. Organisms can **prey** on sufficiently-smaller neighbours. No
-//! behaviour is hard-coded to a role — foraging, fleeing, and hunting all emerge.
+//! A **living, pressuring** world: food waxes and wanes on a day/night–season cycle and
+//! concentrates in drifting "bloom" patches; predation is **skill-based** (a predator only
+//! catches prey it is actually pursuing, so prey can evade); and organisms can **emit and
+//! sense a signal** whose meaning evolution assigns. Every organism has a growing recurrent
+//! brain ([`crate::brain`]). Nothing is hard-coded to a role or outcome — foraging, fleeing,
+//! hunting, timing, and signalling all emerge (or don't) under these pressures.
 //!
-//! Fixed phase order per tick: 1. commands, 2. regrow fields, 3. rebuild spatial hash,
-//! 4. organisms act (index order), 5. apply births.
+//! Fixed phase order per tick: 1. commands, 2. drift blooms + regrow fields + decay signal,
+//! 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
 
 use crate::brain::{self, Brain, OUT_AX, OUT_AY};
 use crate::command::{Command, CommandKind};
@@ -17,12 +19,19 @@ use crate::organism::{Genome, NewOrganism, Organisms};
 use crate::params::WorldParams;
 use crate::rng::{splitmix64, subsystem, Pcg32};
 
+const BLOOM_RADIUS_SQ: Scalar = 45.0 * 45.0;
+const BLOOM_DRIFT: Scalar = 1.5;
+
 #[derive(Clone, Debug)]
 pub struct World {
     pub params: WorldParams,
     pub seed: u64,
     pub tick_count: u64,
     pub field: Vec<i64>,
+    /// Pheromone/signal field (one integer per grid cell); decays over time.
+    pub signal: Vec<i64>,
+    /// Drifting bloom centres where regrowth is boosted.
+    pub blooms: Vec<(Scalar, Scalar)>,
     pub orgs: Organisms,
     hash: SpatialHash,
 }
@@ -39,8 +48,19 @@ impl World {
     pub fn new(seed: u64, params: WorldParams) -> Self {
         let cells = params.cell_count();
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
+        let mut brng = Pcg32::from_key(seed, subsystem::BLOOM, 0);
+        let blooms = (0..params.bloom_count)
+            .map(|_| {
+                (
+                    brng.next_f32_unit() * params.width,
+                    brng.next_f32_unit() * params.height,
+                )
+            })
+            .collect();
         let mut w = World {
             field: vec![params.field_cap; cells],
+            signal: vec![0; cells],
+            blooms,
             orgs: Organisms::with_capacity(params.initial_population as usize),
             hash,
             params,
@@ -75,12 +95,14 @@ impl World {
         w
     }
 
-    /// Reconstruct from snapshot parts (rebuilds the transient spatial hash).
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         params: WorldParams,
         seed: u64,
         tick_count: u64,
         field: Vec<i64>,
+        signal: Vec<i64>,
+        blooms: Vec<(Scalar, Scalar)>,
         orgs: Organisms,
     ) -> Self {
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
@@ -89,6 +111,8 @@ impl World {
             seed,
             tick_count,
             field,
+            signal,
+            blooms,
             orgs,
             hash,
         }
@@ -97,6 +121,17 @@ impl World {
     #[inline]
     pub fn population(&self) -> u32 {
         self.orgs.count
+    }
+
+    /// Day/night–season light level in `0..=1` (a triangle wave over `day_period` ticks).
+    pub fn daylight(&self) -> f32 {
+        let period = self.params.day_period.max(1) as u64;
+        let ph = (self.tick_count % period) as f32 / period as f32;
+        if ph < 0.5 {
+            ph * 2.0
+        } else {
+            2.0 - ph * 2.0
+        }
     }
 
     #[inline]
@@ -129,11 +164,55 @@ impl World {
             self.apply_command(c, &mut events);
         }
 
+        // Drift the bloom centres (seeded Brownian walk).
+        let (seed, tick_c, w_w, w_h) = (
+            self.seed,
+            self.tick_count,
+            self.params.width,
+            self.params.height,
+        );
+        for (k, bloom) in self.blooms.iter_mut().enumerate() {
+            let mut r = Pcg32::from_key(
+                seed,
+                subsystem::BLOOM,
+                splitmix64(tick_c) ^ splitmix64(k as u64),
+            );
+            bloom.0 = wrap(bloom.0 + r.next_f32_signed() * BLOOM_DRIFT, w_w);
+            bloom.1 = wrap(bloom.1 + r.next_f32_signed() * BLOOM_DRIFT, w_h);
+        }
+
+        // Regrow the field: modulated by daylight and boosted near bloom centres.
+        let daylight = self.daylight();
+        let day_factor = 0.4 + daylight * 1.2; // [0.4, 1.6]
         let cap = self.params.field_cap;
-        let regrow = self.params.field_regrow;
-        for f in self.field.iter_mut() {
-            let v = *f + regrow;
-            *f = if v > cap { cap } else { v };
+        let base = self.params.field_regrow;
+        let boost = self.params.bloom_boost;
+        let gw = self.params.grid_w as usize;
+        let gh = self.params.grid_h as usize;
+        let cw = self.params.width / gw as f32;
+        let ch = self.params.height / gh as f32;
+        for cyi in 0..gh {
+            let ccy = (cyi as f32 + 0.5) * ch;
+            for cxi in 0..gw {
+                let ccx = (cxi as f32 + 0.5) * cw;
+                let idx = cyi * gw + cxi;
+                let mut rg = (base as f32 * day_factor) as i64;
+                for &(bx, by) in &self.blooms {
+                    let dx = ccx - bx;
+                    let dy = ccy - by;
+                    if dx * dx + dy * dy <= BLOOM_RADIUS_SQ {
+                        rg += boost;
+                        break;
+                    }
+                }
+                let v = self.field[idx] + rg;
+                self.field[idx] = if v > cap { cap } else { v };
+            }
+        }
+
+        // Decay the signal field.
+        for s in self.signal.iter_mut() {
+            *s = *s * 9 / 10;
         }
 
         self.hash.rebuild(&self.orgs);
@@ -146,7 +225,7 @@ impl World {
             if !self.orgs.alive[i] {
                 continue;
             }
-            self.step_organism(i, tick, &mut scratch, &mut births, &mut events);
+            self.step_organism(i, tick, daylight, &mut scratch, &mut births, &mut events);
         }
 
         for (seq, b) in births.into_iter().enumerate() {
@@ -194,6 +273,7 @@ impl World {
         &mut self,
         i: usize,
         tick: u64,
+        daylight: f32,
         scratch: &mut Vec<Scalar>,
         births: &mut Vec<PendingBirth>,
         events: &mut EventBatch,
@@ -206,7 +286,8 @@ impl World {
 
         // --- sense ---
         let (cx, cy) = self.cell_of(sx, sy);
-        let food = self.field[self.fidx(cx, cy)] as f32 / cap;
+        let here = self.fidx(cx, cy);
+        let food = self.field[here] as f32 / cap;
         let east = self.field[self.fidx(cx + 1, cy)] as f32;
         let west = self.field[self.fidx(cx - 1, cy)] as f32;
         let north = self.field[self.fidx(cx, cy - 1)] as f32;
@@ -214,6 +295,7 @@ impl World {
         let grad_x = (east - west) / cap;
         let grad_y = (south - north) / cap;
         let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
+        let signal_in = (self.signal[here] as f32 / p.signal_cap.max(1) as f32).min(1.0);
 
         let nn = self.hash.nearest(&self.orgs, i, sx, sy, p.sense_radius);
         let (nn_dx, nn_dy, nn_relsize) = match nn {
@@ -226,7 +308,16 @@ impl World {
         };
 
         let inputs = [
-            1.0, food, grad_x, grad_y, energy_in, nn_dx, nn_dy, nn_relsize,
+            1.0,
+            food,
+            grad_x,
+            grad_y,
+            energy_in,
+            nn_dx,
+            nn_dy,
+            nn_relsize,
+            daylight * 2.0 - 1.0,
+            signal_in,
         ];
 
         // --- think ---
@@ -249,12 +340,20 @@ impl World {
         self.field[fi] -= intake;
         self.orgs.energy[i] += intake;
 
-        // --- predation: innate bite of a sufficiently-smaller neighbour ---
+        // --- emit signal ---
+        let emit = out[brain::OUT_EMIT];
+        if emit > 0.0 {
+            let v = self.signal[fi] + (emit * p.emit_scale as f32) as i64;
+            self.signal[fi] = if v > p.signal_cap { p.signal_cap } else { v };
+        }
+
+        // --- predation: catch a smaller neighbour you are actually pursuing ---
         if let Some(j) = nn {
             if self.orgs.alive[j] && size >= self.orgs.g_size[j] * p.predation_size_ratio {
-                let dx = self.orgs.px[j] - self.orgs.px[i];
-                let dy = self.orgs.py[j] - self.orgs.py[i];
-                if dx * dx + dy * dy <= p.contact_radius * p.contact_radius {
+                let dxp = self.orgs.px[j] - self.orgs.px[i];
+                let dyp = self.orgs.py[j] - self.orgs.py[i];
+                let toward = dxp * vx + dyp * vy; // moving toward the prey?
+                if toward > 0.0 && dxp * dxp + dyp * dyp <= p.contact_radius * p.contact_radius {
                     let victim = self.orgs.energy[j];
                     if victim > 0 {
                         let steal = p.bite_amount.min(victim);
@@ -279,12 +378,10 @@ impl World {
             }
         }
 
-        // --- metabolism (brain complexity is taxed) ---
+        // --- metabolism (brain complexity is taxed above a free threshold) ---
         let sq = vx * vx + vy * vy;
         let move_cost = (sq * (p.move_cost_coeff as f32) * size) as i64;
         let size_cost = ((size - 1.0) * p.size_upkeep as f32).max(0.0) as i64;
-        // Free up to a threshold so brains can accumulate structure over generations
-        // (visible growth); a firm tax past it prevents runaway bloat (a soft cap).
         let brain_cost = (self.orgs.brains[i].complexity() as i64 - 18).max(0) * p.brain_cost;
         self.orgs.energy[i] -= p.basal_upkeep + brain_cost + size_cost + move_cost;
         self.orgs.carnivory[i] *= 0.99;
@@ -405,8 +502,8 @@ impl World {
         }
     }
 
-    /// A 64-bit fingerprint of the entire world state, including every organism's brain
-    /// structure and recurrent activations. Organisms are hashed in stable-id order.
+    /// A 64-bit fingerprint of the entire world state — fields, signal, blooms, and every
+    /// organism (including brain structure + recurrent activations), hashed in id order.
     pub fn state_hash(&self) -> u64 {
         let mut h = Fnv::new();
         h.u64(self.tick_count);
@@ -414,6 +511,13 @@ impl World {
         h.u32(self.field.len() as u32);
         for &c in &self.field {
             h.i64(c);
+        }
+        for &s in &self.signal {
+            h.i64(s);
+        }
+        for &(bx, by) in &self.blooms {
+            h.u32(canonical_bits(bx));
+            h.u32(canonical_bits(by));
         }
 
         let mut idx: Vec<usize> = (0..self.orgs.capacity())
@@ -556,5 +660,12 @@ mod tests {
         }
         assert!(w.population() > 0, "world went extinct");
         assert!(births > 0, "no reproduction happened");
+    }
+
+    #[test]
+    fn daylight_cycles() {
+        let w = World::new(1, WorldParams::default());
+        let d = w.daylight();
+        assert!((0.0..=1.0).contains(&d));
     }
 }

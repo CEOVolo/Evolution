@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 3;
+pub const PARAMS_SCHEMA_VERSION: u16 = 4;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -35,6 +35,18 @@ pub struct WorldParams {
     // field (resource) dynamics
     pub field_cap: i64,
     pub field_regrow: i64,
+
+    // living-world dynamics
+    /// Length of the day/night–season cycle in ticks (food waxes and wanes).
+    pub day_period: u32,
+    /// Number of drifting "bloom" centres where regrowth is boosted.
+    pub bloom_count: u32,
+    /// Extra regrowth per tick near a bloom centre.
+    pub bloom_boost: i64,
+
+    // signals (emergent communication)
+    pub emit_scale: i64,
+    pub signal_cap: i64,
 
     // movement (brain-driven)
     pub accel_scale: Scalar,
@@ -88,6 +100,13 @@ impl Default for WorldParams {
 
             field_cap: 1000,
             field_regrow: 6,
+
+            day_period: 1500,
+            bloom_count: 4,
+            bloom_boost: 16,
+
+            emit_scale: 120,
+            signal_cap: 1000,
 
             accel_scale: 0.5,
             max_speed: 2.5,
