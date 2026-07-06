@@ -47,6 +47,21 @@ async function main() {
   };
   $("speed").oninput = (e) => (speed = +e.target.value);
   $("brush").onchange = (e) => (brush = e.target.value);
+
+  const presetSel = $("preset");
+  for (let id = 0; id < Sim.preset_count(); id++) {
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = Sim.preset_name(id);
+    presetSel.appendChild(o);
+  }
+  presetSel.onchange = (e) => {
+    const id = +e.target.value;
+    sim.load_preset(id, (Math.random() * 0xffffffff) >>> 0);
+    popHist.length = 0;
+    predatorsAnnounced = false;
+    toast("🌍 Пресет: " + Sim.preset_name(id));
+  };
   $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
@@ -139,6 +154,21 @@ async function main() {
     bar("carn", carn);
   }
 
+  function updateHealth() {
+    const carn = sim.frac_carnivore();
+    $("a-troph").textContent = Math.round(carn * 100) + "%";
+    bar("troph", carn);
+    const div = sim.diversity();
+    $("a-div").textContent = div.toFixed(2);
+    bar("div", div / 4.16);
+    const spd = sim.avg_speed();
+    $("a-move").textContent = spd.toFixed(2);
+    bar("move", spd / 2.5);
+    const dc = sim.deaths_recent(); // [starved, oldage, killed, predated]
+    $("deaths").innerHTML =
+      `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
+  }
+
   // --- toasts ---
   const toastsEl = $("toasts");
   function toast(text) {
@@ -217,6 +247,7 @@ async function main() {
       tickEl.textContent = sim.tick_count().toLocaleString();
       popEl.textContent = sim.population().toLocaleString();
       updateTraits();
+      updateHealth();
       narrate();
     }
     frame++;

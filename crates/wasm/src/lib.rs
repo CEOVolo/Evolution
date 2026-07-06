@@ -1,16 +1,33 @@
 //! Browser host for `sim-core` via `wasm-bindgen`.
 //!
 //! A thin wrapper exposing the deterministic engine to JavaScript: advance the world, read
-//! render buffers, and issue commands (the single mutation channel). All simulation logic
-//! lives in `sim-core`; this crate only marshals data across the wasm boundary.
+//! render buffers and diagnostics, and issue commands (the single mutation channel). All
+//! simulation logic lives in `sim-core`; this crate only marshals data across the boundary.
+//! Diagnostic readouts (diversity, fractions, averages) are display-only and never feed back
+//! into the sim.
 
-use sim_core::{Command, CommandKind, ParamId, World, WorldParams};
+use sim_core::{presets, Command, CommandKind, DeathCause, Event, ParamId, World, WorldParams};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub struct Sim {
     world: World,
     pending: Vec<Command>,
+    /// Deaths by cause over the most recent `tick(n)` call: [starved, old age, killed, eaten].
+    last_deaths: [u32; 4],
+}
+
+fn accumulate(batch: &sim_core::EventBatch, d: &mut [u32; 4]) {
+    for e in &batch.events {
+        if let Event::Death { cause, .. } = e {
+            match cause {
+                DeathCause::Starved => d[0] += 1,
+                DeathCause::OldAge => d[1] += 1,
+                DeathCause::Killed => d[2] += 1,
+                DeathCause::Predated => d[3] += 1,
+            }
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -21,6 +38,7 @@ impl Sim {
         Sim {
             world: World::new(seed as u64, WorldParams::default()),
             pending: Vec::new(),
+            last_deaths: [0; 4],
         }
     }
 
@@ -28,11 +46,13 @@ impl Sim {
         if n == 0 {
             return;
         }
+        let mut d = [0u32; 4];
         let cmds = std::mem::take(&mut self.pending);
-        self.world.tick(&cmds);
+        accumulate(&self.world.tick(&cmds), &mut d);
         for _ in 1..n {
-            self.world.tick(&[]);
+            accumulate(&self.world.tick(&[]), &mut d);
         }
+        self.last_deaths = d;
     }
 
     // --- readouts ---------------------------------------------------------
@@ -65,7 +85,6 @@ impl Sim {
         format!("{:016x}", self.world.state_hash())
     }
 
-    /// Live organism positions `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn positions(&self) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize * 2);
@@ -78,7 +97,6 @@ impl Sim {
         v
     }
 
-    /// Live organism colours `[r,g,b, ...]`, matching `positions` order.
     pub fn colors(&self) -> Vec<u8> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize * 3);
@@ -92,7 +110,6 @@ impl Sim {
         v
     }
 
-    /// Live organism body sizes, matching `positions` order (for dot radius).
     pub fn sizes(&self) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize);
@@ -104,7 +121,6 @@ impl Sim {
         v
     }
 
-    /// Live organism "carnivory" `0..=255`, matching `positions` order (predator tint).
     pub fn carnivory(&self) -> Vec<u8> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.population() as usize);
@@ -116,7 +132,6 @@ impl Sim {
         v
     }
 
-    /// Resource field normalized to `0..=255`, row-major.
     pub fn field(&self) -> Vec<u8> {
         let cap = self.world.params.field_cap.max(1);
         self.world
@@ -126,7 +141,7 @@ impl Sim {
             .collect()
     }
 
-    /// Population averages `[size, metabolism, repro, carnivory]` (display only).
+    /// `[size, metabolism, repro, carnivory]` averages (display only).
     pub fn avg_traits(&self) -> Vec<f32> {
         let o = &self.world.orgs;
         let (mut sz, mut m, mut r, mut cn, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0u32);
@@ -145,6 +160,95 @@ impl Sim {
             let n = n as f32;
             vec![sz / n, m / n, r / n, cn / n]
         }
+    }
+
+    // --- world-health diagnostics (Phase 0.5) -----------------------------
+
+    /// Deaths by cause over the last `tick(n)` call: `[starved, old_age, killed, eaten]`.
+    pub fn deaths_recent(&self) -> Vec<u32> {
+        self.last_deaths.to_vec()
+    }
+
+    /// Colour diversity as Shannon entropy over 64 quantized colour bins (0 = monoculture,
+    /// ~4.16 = maximally varied).
+    pub fn diversity(&self) -> f32 {
+        let o = &self.world.orgs;
+        let mut bins = [0u32; 64];
+        let mut n = 0u32;
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let b = ((o.cr[i] as usize >> 6) << 4)
+                    | ((o.cg[i] as usize >> 6) << 2)
+                    | (o.cb[i] as usize >> 6);
+                bins[b] += 1;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return 0.0;
+        }
+        let nf = n as f32;
+        let mut h = 0.0f32;
+        for &c in &bins {
+            if c > 0 {
+                let p = c as f32 / nf;
+                h -= p * p.ln();
+            }
+        }
+        h
+    }
+
+    /// Fraction of the population currently hunting (carnivory > 0.12).
+    pub fn frac_carnivore(&self) -> f32 {
+        let o = &self.world.orgs;
+        let (mut c, mut n) = (0u32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                n += 1;
+                if o.carnivory[i] > 0.12 {
+                    c += 1;
+                }
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            c as f32 / n as f32
+        }
+    }
+
+    /// Mean speed (a "fraction moving" proxy).
+    pub fn avg_speed(&self) -> f32 {
+        let o = &self.world.orgs;
+        let (mut s, mut n) = (0.0f32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                s += (o.vx[i] * o.vx[i] + o.vy[i] * o.vy[i]).sqrt();
+                n += 1;
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            s / n as f32
+        }
+    }
+
+    // --- presets ----------------------------------------------------------
+
+    pub fn preset_count() -> u32 {
+        presets::COUNT
+    }
+
+    pub fn preset_name(id: u32) -> String {
+        presets::name(id).to_string()
+    }
+
+    /// Restart with a named preset and a new seed.
+    pub fn load_preset(&mut self, id: u32, seed: u32) {
+        self.world = World::new(seed as u64, presets::preset(id));
+        self.pending.clear();
+        self.last_deaths = [0; 4];
     }
 
     /// Nearest live organism to a world point, for the inspector. Returns

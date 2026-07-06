@@ -32,6 +32,7 @@ pub mod event;
 pub mod math;
 pub mod organism;
 pub mod params;
+pub mod presets;
 pub mod rng;
 pub mod snapshot;
 pub mod world;

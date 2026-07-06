@@ -108,6 +108,8 @@
             <button id="reset" title="Начать новый мир с другим случайным зерном">↻ Новый мир</button></div>
           <div class="row"><label>Скорость</label>
             <input id="speed" type="range" min="1" max="20" value="4" title="Сколько шагов симуляции за кадр" /></div>
+          <div class="row"><label>Пресет</label>
+            <select id="preset" title="Готовые наборы условий мира (проверены на живучесть)"></select></div>
         </div>
 
         <div class="card">
@@ -140,6 +142,17 @@
             <div class="bar"><div class="lab"><span>порог размножения</span><b id="a-repro">—</b></div><div class="track"><div id="b-repro"></div></div></div>
             <div class="bar"><div class="lab"><span>хищность 🔴</span><b id="a-carn">—</b></div><div class="track"><div id="b-carn"></div></div></div>
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Здоровье мира <span class="help" title="Приборы для баланса: сколько хищников, насколько разнообразны клетки, много ли двигаются, и от чего умирают.">ⓘ</span></h2>
+          <div class="bars">
+            <div class="bar"><div class="lab"><span>доля хищников 🔴</span><b id="a-troph">—</b></div><div class="track"><div id="b-troph"></div></div></div>
+            <div class="bar"><div class="lab"><span>разнообразие</span><b id="a-div">—</b></div><div class="track"><div id="b-div"></div></div></div>
+            <div class="bar"><div class="lab"><span>подвижность</span><b id="a-move">—</b></div><div class="track"><div id="b-move"></div></div></div>
+          </div>
+          <div style="margin-top:11px;font-size:12px;color:var(--muted2)">причины смерти (за кадр)</div>
+          <div id="deaths" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
         </div>
 
         <div class="card" id="inspect">

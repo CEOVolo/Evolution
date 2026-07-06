@@ -263,6 +263,18 @@ impl World {
                         let gain = steal * p.predation_gain_num / p.predation_gain_den;
                         self.orgs.energy[i] += gain;
                         self.orgs.carnivory[i] = (self.orgs.carnivory[i] + 0.3).min(1.0);
+                        if self.orgs.energy[j] <= 0 {
+                            let (jcx, jcy) = self.cell_of(self.orgs.px[j], self.orgs.py[j]);
+                            let fj = self.fidx(jcx, jcy);
+                            let v = self.field[fj] + p.death_deposit;
+                            self.field[fj] = if v > p.field_cap { p.field_cap } else { v };
+                            events.events.push(Event::Death {
+                                id: self.orgs.id[j],
+                                cause: DeathCause::Predated,
+                                tick,
+                            });
+                            self.orgs.kill(j);
+                        }
                     }
                 }
             }

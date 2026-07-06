@@ -9,6 +9,8 @@ pub enum DeathCause {
     Starved,
     OldAge,
     Killed,
+    /// Eaten by a predator.
+    Predated,
 }
 
 #[derive(Clone, Copy, Debug)]
