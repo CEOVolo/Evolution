@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 4;
+pub const PARAMS_SCHEMA_VERSION: u16 = 5;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -43,6 +43,12 @@ pub struct WorldParams {
     pub bloom_count: u32,
     /// Extra regrowth per tick near a bloom centre.
     pub bloom_boost: i64,
+
+    // death & decomposition
+    /// Corpse decomposition divisor: `detritus / decompose_div` returns to soil each tick.
+    pub decompose_div: i64,
+    /// Extra corpse mass deposited per unit of body size on death.
+    pub corpse_size_factor: i64,
 
     // signals (emergent communication)
     pub emit_scale: i64,
@@ -105,6 +111,9 @@ impl Default for WorldParams {
             bloom_count: 4,
             bloom_boost: 16,
 
+            decompose_div: 40,
+            corpse_size_factor: 55,
+
             emit_scale: 120,
             signal_cap: 1000,
 
@@ -123,7 +132,7 @@ impl Default for WorldParams {
             brain_cost: 1,
             size_upkeep: 2,
             eat_rate: 60,
-            death_deposit: 25,
+            death_deposit: 40,
             max_age: 2500,
 
             repro_threshold: 420,

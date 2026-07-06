@@ -28,6 +28,9 @@ pub struct World {
     pub seed: u64,
     pub tick_count: u64,
     pub field: Vec<i64>,
+    /// Corpse/detritus field: dead organisms leave body mass here; it slowly decomposes into
+    /// the food field (soil enrichment) and can be eaten directly (scavenging).
+    pub detritus: Vec<i64>,
     /// Pheromone/signal field (one integer per grid cell); decays over time.
     pub signal: Vec<i64>,
     /// Drifting bloom centres where regrowth is boosted.
@@ -59,6 +62,7 @@ impl World {
             .collect();
         let mut w = World {
             field: vec![params.field_cap; cells],
+            detritus: vec![0; cells],
             signal: vec![0; cells],
             blooms,
             orgs: Organisms::with_capacity(params.initial_population as usize),
@@ -101,6 +105,7 @@ impl World {
         seed: u64,
         tick_count: u64,
         field: Vec<i64>,
+        detritus: Vec<i64>,
         signal: Vec<i64>,
         blooms: Vec<(Scalar, Scalar)>,
         orgs: Organisms,
@@ -111,6 +116,7 @@ impl World {
             seed,
             tick_count,
             field,
+            detritus,
             signal,
             blooms,
             orgs,
@@ -150,11 +156,21 @@ impl World {
         (y * gw + x) as usize
     }
 
+    /// Total edible value at a cell: living food plus scavengeable corpses.
     #[inline]
-    fn deposit_detritus(&mut self, fi: usize) {
-        let v = self.field[fi] + self.params.death_deposit;
-        let cap = self.params.field_cap;
-        self.field[fi] = if v > cap { cap } else { v };
+    fn food_at(&self, cx: i32, cy: i32) -> i64 {
+        let i = self.fidx(cx, cy);
+        self.field[i] + self.detritus[i]
+    }
+
+    /// A dead organism leaves body mass (scaled by size) in the detritus field.
+    #[inline]
+    fn deposit_corpse(&mut self, fi: usize, size: Scalar) {
+        let mass =
+            self.params.death_deposit + (size * self.params.corpse_size_factor as f32) as i64;
+        let capd = self.params.field_cap * 4;
+        let v = self.detritus[fi] + mass;
+        self.detritus[fi] = if v > capd { capd } else { v };
     }
 
     pub fn tick(&mut self, cmds: &[Command]) -> EventBatch {
@@ -207,6 +223,17 @@ impl World {
                 }
                 let v = self.field[idx] + rg;
                 self.field[idx] = if v > cap { cap } else { v };
+            }
+        }
+
+        // Decompose corpses slowly into soil food.
+        let ddiv = self.params.decompose_div.max(1);
+        for c in 0..self.field.len() {
+            let dec = self.detritus[c] / ddiv;
+            if dec > 0 {
+                self.detritus[c] -= dec;
+                let v = self.field[c] + dec;
+                self.field[c] = if v > cap { cap } else { v };
             }
         }
 
@@ -287,11 +314,11 @@ impl World {
         // --- sense ---
         let (cx, cy) = self.cell_of(sx, sy);
         let here = self.fidx(cx, cy);
-        let food = self.field[here] as f32 / cap;
-        let east = self.field[self.fidx(cx + 1, cy)] as f32;
-        let west = self.field[self.fidx(cx - 1, cy)] as f32;
-        let north = self.field[self.fidx(cx, cy - 1)] as f32;
-        let south = self.field[self.fidx(cx, cy + 1)] as f32;
+        let food = self.food_at(cx, cy) as f32 / cap;
+        let east = self.food_at(cx + 1, cy) as f32;
+        let west = self.food_at(cx - 1, cy) as f32;
+        let north = self.food_at(cx, cy - 1) as f32;
+        let south = self.food_at(cx, cy + 1) as f32;
         let grad_x = (east - west) / cap;
         let grad_y = (south - north) / cap;
         let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
@@ -336,9 +363,13 @@ impl World {
         let (ncx, ncy) = self.cell_of(self.orgs.px[i], self.orgs.py[i]);
         let fi = self.fidx(ncx, ncy);
         let want = ((p.eat_rate as f32) * self.orgs.g_metab[i]) as i64;
-        let intake = want.min(self.field[fi]).max(0);
-        self.field[fi] -= intake;
-        self.orgs.energy[i] += intake;
+        let from_field = want.min(self.field[fi]).max(0);
+        self.field[fi] -= from_field;
+        // Scavenging corpses is slower than grazing, so carcasses linger (and are visible).
+        let scav = ((want - from_field) / 2).max(0);
+        let from_det = scav.min(self.detritus[fi]);
+        self.detritus[fi] -= from_det;
+        self.orgs.energy[i] += from_field + from_det;
 
         // --- emit signal ---
         let emit = out[brain::OUT_EMIT];
@@ -362,10 +393,14 @@ impl World {
                         self.orgs.energy[i] += gain;
                         self.orgs.carnivory[i] = (self.orgs.carnivory[i] + 0.3).min(1.0);
                         if self.orgs.energy[j] <= 0 {
+                            let vsize = self.orgs.g_size[j];
                             let (jcx, jcy) = self.cell_of(self.orgs.px[j], self.orgs.py[j]);
                             let fj = self.fidx(jcx, jcy);
-                            let v = self.field[fj] + p.death_deposit;
-                            self.field[fj] = if v > p.field_cap { p.field_cap } else { v };
+                            let mass =
+                                p.death_deposit + (vsize * p.corpse_size_factor as f32) as i64;
+                            let capd = p.field_cap * 4;
+                            let v = self.detritus[fj] + mass;
+                            self.detritus[fj] = if v > capd { capd } else { v };
                             events.events.push(Event::Death {
                                 id: self.orgs.id[j],
                                 cause: DeathCause::Predated,
@@ -389,7 +424,7 @@ impl World {
 
         // --- death ---
         if self.orgs.energy[i] <= 0 {
-            self.deposit_detritus(fi);
+            self.deposit_corpse(fi, size);
             events.events.push(Event::Death {
                 id: self.orgs.id[i],
                 cause: DeathCause::Starved,
@@ -399,7 +434,7 @@ impl World {
             return;
         }
         if self.orgs.age[i] >= p.max_age {
-            self.deposit_detritus(fi);
+            self.deposit_corpse(fi, size);
             events.events.push(Event::Death {
                 id: self.orgs.id[i],
                 cause: DeathCause::OldAge,
@@ -511,6 +546,9 @@ impl World {
         h.u32(self.field.len() as u32);
         for &c in &self.field {
             h.i64(c);
+        }
+        for &dt in &self.detritus {
+            h.i64(dt);
         }
         for &s in &self.signal {
             h.i64(s);

@@ -13,8 +13,8 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F34; // "EVO4"
-const VERSION: u16 = 4;
+const MAGIC: u32 = 0x45564F35; // "EVO5"
+const VERSION: u16 = 5;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -34,6 +34,10 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.u32(w.field.len() as u32);
     for &c in &w.field {
         o.i64(c);
+    }
+    o.u32(w.detritus.len() as u32);
+    for &dt in &w.detritus {
+        o.i64(dt);
     }
     o.u32(w.signal.len() as u32);
     for &s in &w.signal {
@@ -67,6 +71,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..flen {
         field.push(r.i64()?);
     }
+    let dlen = r.u32()? as usize;
+    let mut detritus = Vec::with_capacity(dlen);
+    for _ in 0..dlen {
+        detritus.push(r.i64()?);
+    }
     let slen = r.u32()? as usize;
     let mut signal = Vec::with_capacity(slen);
     for _ in 0..slen {
@@ -80,7 +89,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
-        params, seed, tick_count, field, signal, blooms, orgs,
+        params, seed, tick_count, field, detritus, signal, blooms, orgs,
     ))
 }
 
@@ -94,6 +103,8 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.u32(p.day_period);
     o.u32(p.bloom_count);
     o.i64(p.bloom_boost);
+    o.i64(p.decompose_div);
+    o.i64(p.corpse_size_factor);
     o.i64(p.emit_scale);
     o.i64(p.signal_cap);
     o.f32(p.accel_scale);
@@ -136,6 +147,8 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         day_period: r.u32()?,
         bloom_count: r.u32()?,
         bloom_boost: r.i64()?,
+        decompose_div: r.i64()?,
+        corpse_size_factor: r.i64()?,
         emit_scale: r.i64()?,
         signal_cap: r.i64()?,
         accel_scale: r.f32()?,

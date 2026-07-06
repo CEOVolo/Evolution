@@ -156,6 +156,16 @@ impl Sim {
             .collect()
     }
 
+    /// Detritus/corpse field normalized to `0..=255` (against `field_cap`), row-major.
+    pub fn detritus(&self) -> Vec<u8> {
+        let cap = self.world.params.field_cap.max(1);
+        self.world
+            .detritus
+            .iter()
+            .map(|&s| ((s.max(0) * 255) / cap).min(255) as u8)
+            .collect()
+    }
+
     /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn blooms(&self) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.world.blooms.len() * 2);
