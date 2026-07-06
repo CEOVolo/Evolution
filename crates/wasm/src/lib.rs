@@ -166,6 +166,15 @@ impl Sim {
             .collect()
     }
 
+    /// Static terrain fertility normalized to `0..=255` (barren→0, fertile→255), row-major.
+    pub fn terrain(&self) -> Vec<u8> {
+        self.world
+            .terrain
+            .iter()
+            .map(|&t| (((t - 0.15) / 1.75) * 255.0).clamp(0.0, 255.0) as u8)
+            .collect()
+    }
+
     /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn blooms(&self) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.world.blooms.len() * 2);

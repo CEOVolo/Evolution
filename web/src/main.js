@@ -297,14 +297,16 @@ async function main() {
     const f = sim.field();
     const sg = sim.signal();
     const dt = sim.detritus();
+    const tr = sim.terrain();
     const d = fimg.data;
     for (let i = 0, j = 0; i < f.length; i++, j += 4) {
       const v = f[i];
       const s = sg[i];
       const de = dt[i];
-      d[j] = 12 + s * 0.12 + de * 0.85; // corpses read reddish-brown
-      d[j + 1] = 26 + v * 0.62 + de * 0.2;
-      d[j + 2] = 22 + s * 0.7;
+      const barren = 255 - tr[i]; // landscape base: barren reads tan, fertile darker green
+      d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85;
+      d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2;
+      d[j + 2] = 18 + barren * 0.05 + s * 0.7;
       d[j + 3] = 255;
     }
     fctx.putImageData(fimg, 0, 0);

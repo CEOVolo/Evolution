@@ -13,8 +13,8 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F35; // "EVO5"
-const VERSION: u16 = 5;
+const MAGIC: u32 = 0x45564F36; // "EVO6"
+const VERSION: u16 = 6;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -34,6 +34,10 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.u32(w.field.len() as u32);
     for &c in &w.field {
         o.i64(c);
+    }
+    o.u32(w.terrain.len() as u32);
+    for &t in &w.terrain {
+        o.f32(t);
     }
     o.u32(w.detritus.len() as u32);
     for &dt in &w.detritus {
@@ -71,6 +75,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..flen {
         field.push(r.i64()?);
     }
+    let tlen = r.u32()? as usize;
+    let mut terrain = Vec::with_capacity(tlen);
+    for _ in 0..tlen {
+        terrain.push(r.f32()?);
+    }
     let dlen = r.u32()? as usize;
     let mut detritus = Vec::with_capacity(dlen);
     for _ in 0..dlen {
@@ -89,7 +98,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
-        params, seed, tick_count, field, detritus, signal, blooms, orgs,
+        params, seed, tick_count, field, terrain, detritus, signal, blooms, orgs,
     ))
 }
 

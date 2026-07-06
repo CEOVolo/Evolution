@@ -28,6 +28,9 @@ pub struct World {
     pub seed: u64,
     pub tick_count: u64,
     pub field: Vec<i64>,
+    /// Static terrain fertility per cell (~0.15..1.9): a landscape of rich and barren places
+    /// that permanently scales local regrowth, so different regions become different habitats.
+    pub terrain: Vec<Scalar>,
     /// Corpse/detritus field: dead organisms leave body mass here; it slowly decomposes into
     /// the food field (soil enrichment) and can be eaten directly (scavenging).
     pub detritus: Vec<i64>,
@@ -60,8 +63,10 @@ impl World {
                 )
             })
             .collect();
+        let terrain = make_terrain(seed, &params);
         let mut w = World {
             field: vec![params.field_cap; cells],
+            terrain,
             detritus: vec![0; cells],
             signal: vec![0; cells],
             blooms,
@@ -105,6 +110,7 @@ impl World {
         seed: u64,
         tick_count: u64,
         field: Vec<i64>,
+        terrain: Vec<Scalar>,
         detritus: Vec<i64>,
         signal: Vec<i64>,
         blooms: Vec<(Scalar, Scalar)>,
@@ -116,6 +122,7 @@ impl World {
             seed,
             tick_count,
             field,
+            terrain,
             detritus,
             signal,
             blooms,
@@ -212,7 +219,7 @@ impl World {
             for cxi in 0..gw {
                 let ccx = (cxi as f32 + 0.5) * cw;
                 let idx = cyi * gw + cxi;
-                let mut rg = (base as f32 * day_factor) as i64;
+                let mut rg = (base as f32 * day_factor * self.terrain[idx]) as i64;
                 for &(bx, by) in &self.blooms {
                     let dx = ccx - bx;
                     let dy = ccy - by;
@@ -547,6 +554,9 @@ impl World {
         for &c in &self.field {
             h.i64(c);
         }
+        for &t in &self.terrain {
+            h.u32(canonical_bits(t));
+        }
         for &dt in &self.detritus {
             h.i64(dt);
         }
@@ -599,6 +609,50 @@ impl World {
         }
         h.finish()
     }
+}
+
+/// Generate a static fertility landscape from the seed: a few fertile and barren centres with
+/// linear falloff, giving smooth rich/poor regions. Deterministic (only `+ - * / sqrt`).
+fn make_terrain(seed: u64, p: &WorldParams) -> Vec<Scalar> {
+    let gw = p.grid_w as i32;
+    let gh = p.grid_h as i32;
+    let cw = p.width / p.grid_w as f32;
+    let ch = p.height / p.grid_h as f32;
+    let radius = p.width * 0.28;
+    let mut rng = Pcg32::from_key(seed, subsystem::TERRAIN, 0);
+    let mut centres: Vec<(Scalar, Scalar, Scalar)> = Vec::new();
+    for _ in 0..6 {
+        centres.push((
+            rng.next_f32_unit() * p.width,
+            rng.next_f32_unit() * p.height,
+            0.9,
+        ));
+    }
+    for _ in 0..5 {
+        centres.push((
+            rng.next_f32_unit() * p.width,
+            rng.next_f32_unit() * p.height,
+            -0.9,
+        ));
+    }
+    let mut t = vec![1.0f32; p.cell_count()];
+    for cy in 0..gh {
+        let py = (cy as f32 + 0.5) * ch;
+        for cx in 0..gw {
+            let px = (cx as f32 + 0.5) * cw;
+            let mut f = 1.0f32;
+            for &(bx, by, st) in &centres {
+                let dx = px - bx;
+                let dy = py - by;
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < radius {
+                    f += st * (1.0 - d / radius);
+                }
+            }
+            t[(cy * gw + cx) as usize] = f.clamp(0.15, 1.9);
+        }
+    }
+    t
 }
 
 fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
