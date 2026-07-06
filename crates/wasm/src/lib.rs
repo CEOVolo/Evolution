@@ -166,6 +166,45 @@ impl Sim {
         v
     }
 
+    /// Live organism velocities `[vx0, vy0, ...]`, matching `positions` order (heading lines).
+    pub fn velocities(&self) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize * 2);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push(o.vx[i]);
+                v.push(o.vy[i]);
+            }
+        }
+        v
+    }
+
+    /// Look up a specific organism by id (for follow mode). Returns
+    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, carnivory, brain]`, or empty
+    /// if that organism is no longer alive.
+    pub fn by_id(&self, id: u32) -> Vec<f32> {
+        let o = &self.world.orgs;
+        for i in 0..o.capacity() {
+            if o.alive[i] && o.id[i] == id {
+                return vec![
+                    o.px[i],
+                    o.py[i],
+                    o.energy[i] as f32,
+                    o.age[i] as f32,
+                    o.g_size[i],
+                    o.g_metab[i],
+                    o.g_repro[i],
+                    o.cr[i] as f32,
+                    o.cg[i] as f32,
+                    o.cb[i] as f32,
+                    o.carnivory[i],
+                    o.brains[i].complexity() as f32,
+                ];
+            }
+        }
+        Vec::new()
+    }
+
     /// `[size, metabolism, repro, carnivory]` averages (display only).
     pub fn avg_traits(&self) -> Vec<f32> {
         let o = &self.world.orgs;

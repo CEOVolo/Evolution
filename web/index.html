@@ -72,7 +72,7 @@
     <div id="app">
       <div class="stage">
         <canvas id="c" width="640" height="640"></canvas>
-        <div class="hint" id="hint">наведи на клетку — покажу её гены · зажми и рисуй кистью</div>
+        <div class="hint" id="hint">колесо — зум · тащи — панорама · клик по клетке — следить · 2×клик — сброс вида</div>
       </div>
 
       <div id="panel">
@@ -113,8 +113,9 @@
         </div>
 
         <div class="card">
-          <div class="row"><label>Кисть</label>
-            <select id="brush" title="Что делает клик/протяжка по миру">
+          <div class="row"><label>Мышь</label>
+            <select id="brush" title="Режим мыши: наблюдать (зум/панорама/следить) или рисовать кистью">
+              <option value="observe">👁 Наблюдать (зум/следить)</option>
               <option value="food">🌱 Сыпать еду</option>
               <option value="spawn">✱ Подселить клетки</option>
               <option value="kill">☠ Стереть участок</option>

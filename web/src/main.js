@@ -1,5 +1,5 @@
-// Legible Canvas prototype over the deterministic sim-core (wasm).
-// Phase 1: cells have evolvable neural brains and can prey on smaller cells.
+// Canvas prototype over the deterministic sim-core (wasm), with a zoomable/pannable camera
+// and follow mode — so you can watch individual cells interact, not just a global blur.
 
 import init, { Sim } from "../pkg/evolution.js";
 
@@ -16,8 +16,6 @@ async function main() {
 
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
-  const sxk = canvas.width / worldW;
-  const syk = canvas.height / worldH;
 
   const fieldCanvas = document.createElement("canvas");
   fieldCanvas.width = gridW;
@@ -27,10 +25,36 @@ async function main() {
 
   const $ = (id) => document.getElementById(id);
 
+  // --- camera ---
+  const baseScale = canvas.width / worldW;
+  const cam = { x: worldW / 2, y: worldH / 2, zoom: 1 };
+  let followId = null;
+
+  function canvasCoords(e) {
+    const r = canvas.getBoundingClientRect();
+    return [
+      (e.clientX - r.left) * (canvas.width / r.width),
+      (e.clientY - r.top) * (canvas.height / r.height),
+    ];
+  }
+  function screenToWorld(mx, my) {
+    const s = baseScale * cam.zoom;
+    return { x: (mx - canvas.width / 2) / s + cam.x, y: (my - canvas.height / 2) / s + cam.y };
+  }
+  function resetView() {
+    cam.x = worldW / 2;
+    cam.y = worldH / 2;
+    cam.zoom = 1;
+    unfollow();
+  }
+  function unfollow() {
+    followId = null;
+  }
+
   // --- controls ---
   let playing = true;
   let speed = 4;
-  let brush = "food";
+  let brush = "observe";
   let predatorsAnnounced = false;
 
   const playBtn = $("play");
@@ -43,10 +67,14 @@ async function main() {
     sim.reset((Math.random() * 0xffffffff) >>> 0);
     popHist.length = 0;
     predatorsAnnounced = false;
+    resetView();
     toast("🌍 Новый мир засеян");
   };
   $("speed").oninput = (e) => (speed = +e.target.value);
   $("brush").onchange = (e) => (brush = e.target.value);
+  $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
+  $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
+  $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
 
   const presetSel = $("preset");
   for (let id = 0; id < Sim.preset_count(); id++) {
@@ -60,52 +88,87 @@ async function main() {
     sim.load_preset(id, (Math.random() * 0xffffffff) >>> 0);
     popHist.length = 0;
     predatorsAnnounced = false;
+    resetView();
     toast("🌍 Пресет: " + Sim.preset_name(id));
   };
-  $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
-  $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
-  $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
 
-  function worldFromEvent(e) {
-    const rect = canvas.getBoundingClientRect();
-    return [
-      ((e.clientX - rect.left) / rect.width) * worldW,
-      ((e.clientY - rect.top) / rect.height) * worldH,
-    ];
-  }
-  function applyBrush(e) {
-    const [wx, wy] = worldFromEvent(e);
-    const cx = Math.floor(wx / cellW);
-    const cy = Math.floor(wy / cellH);
+  function applyBrush(mx, my) {
+    const w = screenToWorld(mx, my);
+    const cx = Math.floor(w.x / cellW);
+    const cy = Math.floor(w.y / cellH);
     if (brush === "food") sim.inject(cx, cy, 3, 900);
     else if (brush === "spawn") for (let k = 0; k < 6; k++) sim.spawn(cx, cy, 350);
     else if (brush === "kill") sim.kill(cx - 3, cy - 3, cx + 3, cy + 3);
   }
-  canvas.addEventListener("mousedown", applyBrush);
-  canvas.addEventListener("mousemove", (e) => {
-    if (e.buttons & 1) applyBrush(e);
-    else inspectHover(e);
+
+  // --- mouse: zoom / pan / follow / paint ---
+  let dragging = false;
+  let downX = 0;
+  let downY = 0;
+  let moved = false;
+  let panStart = null;
+
+  canvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const [mx, my] = canvasCoords(e);
+      const before = screenToWorld(mx, my);
+      cam.zoom = Math.max(1, Math.min(40, cam.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      const after = screenToWorld(mx, my);
+      cam.x += before.x - after.x;
+      cam.y += before.y - after.y;
+    },
+    { passive: false }
+  );
+
+  canvas.addEventListener("mousedown", (e) => {
+    const [mx, my] = canvasCoords(e);
+    dragging = true;
+    moved = false;
+    downX = mx;
+    downY = my;
+    panStart = { x: cam.x, y: cam.y };
+    if (brush !== "observe") applyBrush(mx, my);
   });
+  canvas.addEventListener("mousemove", (e) => {
+    const [mx, my] = canvasCoords(e);
+    if (dragging) {
+      if (Math.abs(mx - downX) + Math.abs(my - downY) > 3) moved = true;
+      if (brush === "observe") {
+        const s = baseScale * cam.zoom;
+        cam.x = panStart.x - (mx - downX) / s;
+        cam.y = panStart.y - (my - downY) / s;
+      } else {
+        applyBrush(mx, my);
+      }
+    } else if (brush === "observe" && followId === null) {
+      inspectHover(mx, my);
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragging && brush === "observe" && !moved) {
+      const w = screenToWorld(downX, downY);
+      const n = sim.nearest(w.x, w.y);
+      if (n.length) {
+        followId = n[10] | 0;
+        if (cam.zoom < 4) cam.zoom = 8;
+        toast("👁 Следим за клеткой #" + followId + " — 2×клик, чтобы отпустить");
+      }
+    }
+    dragging = false;
+  });
+  canvas.addEventListener("dblclick", resetView);
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function inspectHover(e) {
-    const now = performance.now();
-    if (now - lastInspect < 70) return;
-    lastInspect = now;
-    const [wx, wy] = worldFromEvent(e);
-    const n = sim.nearest(wx, wy);
-    if (!n.length) {
-      inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
-      return;
-    }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain] = n;
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, tag) {
     const diet = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
-    inspectBody.innerHTML = `
+    return `
       <div class="row" style="margin:0 0 8px">
-        <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}</span>
+        <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
         <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
       </div>
       <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${diet}</b></div>
@@ -113,7 +176,20 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>мозг 🧠 (нейроны+связи)</span><b>${brain | 0}</b></div>`;
+      <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>`;
+  }
+  function inspectHover(mx, my) {
+    const now = performance.now();
+    if (now - lastInspect < 70) return;
+    lastInspect = now;
+    const w = screenToWorld(mx, my);
+    const n = sim.nearest(w.x, w.y);
+    if (!n.length) {
+      inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
+      return;
+    }
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, "");
   }
 
   // --- population chart + trait bars ---
@@ -121,7 +197,6 @@ async function main() {
   const cctx = chart.getContext("2d");
   const popHist = [];
   const POP_MAX = 272;
-
   function drawChart() {
     cctx.clearRect(0, 0, chart.width, chart.height);
     if (popHist.length < 2) return;
@@ -139,7 +214,6 @@ async function main() {
     cctx.font = "10px ui-monospace, monospace";
     cctx.fillText("макс " + max.toLocaleString(), 4, 11);
   }
-
   const bar = (id, frac) => {
     $("b-" + id).style.width = Math.max(0, Math.min(1, frac)) * 100 + "%";
   };
@@ -154,7 +228,6 @@ async function main() {
     bar("repro", (repro - 0.5) / 1.0);
     bar("carn", carn);
   }
-
   function updateHealth() {
     const carn = sim.frac_carnivore();
     $("a-troph").textContent = Math.round(carn * 100) + "%";
@@ -165,11 +238,9 @@ async function main() {
     const spd = sim.avg_speed();
     $("a-move").textContent = spd.toFixed(2);
     bar("move", spd / 2.5);
-    const dc = sim.deaths_recent(); // [starved, oldage, killed, predated]
-    $("deaths").innerHTML =
-      `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
+    const dc = sim.deaths_recent();
+    $("deaths").innerHTML = `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
   }
-
   function updateSpecies() {
     $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
     let list;
@@ -190,12 +261,12 @@ async function main() {
   // --- toasts ---
   const toastsEl = $("toasts");
   function toast(text) {
-    const d = document.createElement("div");
-    d.className = "toast";
-    d.textContent = text;
-    toastsEl.appendChild(d);
-    setTimeout(() => d.classList.add("fade"), 3400);
-    setTimeout(() => d.remove(), 4100);
+    const dv = document.createElement("div");
+    dv.className = "toast";
+    dv.textContent = text;
+    toastsEl.appendChild(dv);
+    setTimeout(() => dv.classList.add("fade"), 3400);
+    setTimeout(() => dv.remove(), 4100);
   }
   let lastNarr = performance.now();
   let lastNarrPop = sim.population();
@@ -216,12 +287,13 @@ async function main() {
     lastNarrPop = pop;
   }
 
-  // --- render loop ---
+  // --- render ---
   const tickEl = $("s-tick");
   const popEl = $("s-pop");
   let frame = 0;
 
   function draw() {
+    // field + signal heatmap at grid resolution
     const f = sim.field();
     const sg = sim.signal();
     const d = fimg.data;
@@ -234,24 +306,46 @@ async function main() {
       d[j + 3] = 255;
     }
     fctx.putImageData(fimg, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(fieldCanvas, 0, 0, canvas.width, canvas.height);
 
+    const W = canvas.width;
+    const H = canvas.height;
+    const s = baseScale * cam.zoom;
+    const ox = W / 2 - cam.x * s;
+    const oy = H / 2 - cam.y * s;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#050705";
+    ctx.fillRect(0, 0, W, H);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(fieldCanvas, ox, oy, worldW * s, worldH * s);
+
+    // organisms
     const p = sim.positions();
     const c = sim.colors();
     const sz = sim.sizes();
     const cn = sim.carnivory();
+    const closeUp = cam.zoom > 2.5;
+    const vel = closeUp ? sim.velocities() : null;
     for (let i = 0, k = 0, m = 0; i < p.length; i += 2, k += 3, m++) {
-      const rad = 1.1 + sz[m] * 1.3;
-      const x = p[i] * sxk;
-      const y = p[i + 1] * syk;
+      const x = ox + p[i] * s;
+      const y = oy + p[i + 1] * s;
+      if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+      const rad = (1.2 + sz[m] * 1.4) * s * 0.8;
       if (cn[m] > 30) {
         ctx.fillStyle = "rgba(255,60,60,0.85)";
-        const rr = rad + 1.3;
+        const rr = rad + (closeUp ? 2 : 1.2);
         ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
       }
       ctx.fillStyle = `rgb(${c[k]},${c[k + 1]},${c[k + 2]})`;
       ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+      if (vel) {
+        ctx.strokeStyle = "rgba(230,240,255,0.55)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + vel[i] * s * 5, y + vel[i + 1] * s * 5);
+        ctx.stroke();
+      }
     }
 
     // drifting bloom (food-patch) centres
@@ -260,7 +354,16 @@ async function main() {
     ctx.lineWidth = 1;
     for (let i = 0; i < bl.length; i += 2) {
       ctx.beginPath();
-      ctx.arc(bl[i] * sxk, bl[i + 1] * syk, 45 * sxk, 0, 6.283);
+      ctx.arc(ox + bl[i] * s, oy + bl[i + 1] * s, 45 * s, 0, 6.283);
+      ctx.stroke();
+    }
+
+    // follow highlight (the followed cell is kept at screen centre)
+    if (followId !== null) {
+      ctx.strokeStyle = "rgba(120,230,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2, Math.max(14, 4 * s), 0, 6.283);
       ctx.stroke();
     }
 
@@ -268,12 +371,30 @@ async function main() {
     const dl = sim.daylight();
     if (dl < 1) {
       ctx.fillStyle = `rgba(6,10,28,${(1 - dl) * 0.4})`;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, W, H);
     }
+  }
+
+  function updateFollow() {
+    if (followId === null) return;
+    const info = sim.by_id(followId);
+    if (!info.length) {
+      toast("☠ Клетка #" + followId + " погибла");
+      followId = null;
+      return;
+    }
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain] = info;
+    cam.x = px;
+    cam.y = py;
+    inspectBody.innerHTML = cellCard(
+      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain,
+      ' <span style="color:var(--accent)">· следим</span>'
+    );
   }
 
   function loop() {
     if (playing) sim.tick(speed);
+    updateFollow();
     draw();
     if ((frame & 3) === 0) {
       popHist.push(sim.population());
@@ -296,6 +417,7 @@ async function main() {
 
   window.__evo = {
     sim,
+    cam,
     step: (n) => {
       sim.tick(n);
       draw();
@@ -303,7 +425,7 @@ async function main() {
     },
   };
 
-  toast("👋 Живой мир с мозгами. Наведи на клетку, покрути ползунки, посыпь еды.");
+  toast("👋 Живой мир. Крути колесо, чтобы приблизиться, и кликни клетку — следить за ней.");
   loop();
 }
 
