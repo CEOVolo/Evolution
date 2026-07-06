@@ -63,7 +63,7 @@ async function main() {
     const cx = Math.floor(wx / cellW);
     const cy = Math.floor(wy / cellH);
     if (brush === "food") sim.inject(cx, cy, 3, 900);
-    else if (brush === "spawn") for (let k = 0; k < 6; k++) sim.spawn(cx, cy, 200);
+    else if (brush === "spawn") for (let k = 0; k < 6; k++) sim.spawn(cx, cy, 350);
     else if (brush === "kill") sim.kill(cx - 3, cy - 3, cx + 3, cy + 3);
   }
   canvas.addEventListener("mousedown", applyBrush);
@@ -87,7 +87,7 @@ async function main() {
       return;
     }
     const [, , energy, age, size, metab, repro, r, g, b, id, carn] = n;
-    const diet = carn > 0.15 ? "🔴 хищник" : "🌿 травоядное";
+    const diet = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     inspectBody.innerHTML = `
       <div class="row" style="margin:0 0 8px">
         <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}</span>
@@ -195,7 +195,7 @@ async function main() {
       const rad = 1.1 + sz[m] * 1.3;
       const x = p[i] * sxk;
       const y = p[i + 1] * syk;
-      if (cn[m] > 40) {
+      if (cn[m] > 30) {
         ctx.fillStyle = "rgba(255,60,60,0.85)";
         const rr = rad + 1.3;
         ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);

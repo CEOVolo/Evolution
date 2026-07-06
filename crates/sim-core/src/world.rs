@@ -273,7 +273,7 @@ impl World {
         let move_cost = (sq * (p.move_cost_coeff as f32) * size) as i64;
         let size_cost = ((size - 1.0) * p.size_upkeep as f32).max(0.0) as i64;
         self.orgs.energy[i] -= p.basal_upkeep + p.brain_cost + size_cost + move_cost;
-        self.orgs.carnivory[i] *= 0.98;
+        self.orgs.carnivory[i] *= 0.99;
         self.orgs.age[i] += 1;
 
         // --- death ---
@@ -338,6 +338,24 @@ impl World {
                 let ch = self.params.height / self.params.grid_h as f32;
                 let px = ((*cx).rem_euclid(self.params.grid_w as i32) as f32 + 0.5) * cw;
                 let py = ((*cy).rem_euclid(self.params.grid_h as i32) as f32 + 0.5) * ch;
+                // Give spawned cells a small random brain + varied genome so they are viable
+                // (a zero brain never moves and starves). Deterministic from seed/tick/id.
+                let key = splitmix64(self.tick_count)
+                    ^ splitmix64(self.orgs.next_id as u64)
+                    ^ splitmix64((((*cx as i64) << 20) ^ *cy as i64) as u64);
+                let mut rng = Pcg32::from_key(self.seed, subsystem::SPAWN, key);
+                let genome = Genome {
+                    size: 0.6 + rng.next_f32_unit() * 1.0,
+                    metabolism: 0.6 + rng.next_f32_unit() * 0.8,
+                    repro: 0.6 + rng.next_f32_unit() * 0.8,
+                    r: rng.below(256) as u8,
+                    g: rng.below(256) as u8,
+                    b: rng.below(256) as u8,
+                };
+                let mut weights = brain::zero_weights();
+                for x in weights.iter_mut() {
+                    *x = rng.next_f32_signed() * 0.8;
+                }
                 self.orgs.insert(NewOrganism {
                     px,
                     py,
@@ -346,8 +364,8 @@ impl World {
                     energy: *energy,
                     parent: u32::MAX,
                     birth_tick: self.tick_count,
-                    genome: Genome::base(),
-                    weights: brain::zero_weights(),
+                    genome,
+                    weights,
                 });
             }
             CommandKind::Kill { cx0, cy0, cx1, cy1 } => {
