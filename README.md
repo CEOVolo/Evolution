@@ -11,7 +11,26 @@ the starting conditions and paint substances into a living world, then watch wha
 
 ## Status
 
-Early **Phase 0** — building the deterministic simulation core. Not yet usable.
+**Phase 0 complete** — the deterministic simulation core is built, tested, and provably
+identical on native and wasm. There is a rough but **playable browser prototype** (see
+below): organisms live, eat, deplete a resource field, die, and reproduce with mutation, and
+you can poke the world live. It is deliberately basic — no neural brains or fancy rendering
+yet; those come in Phase 1.
+
+## Try the prototype
+
+```sh
+# 1. Build the wasm module from the Rust core (needs wasm-pack)
+wasm-pack build crates/wasm --target web --out-dir ../../web/pkg --out-name evolution --release
+
+# 2. Run the web prototype
+cd web && npm install && npm run dev      # then open http://localhost:5173
+```
+
+Controls: play/pause and speed; a **brush** to add food, spawn cells, or wipe an area (click
+and drag on the world); and live sliders for mutation rate, food regrowth, and eat rate.
+The `state hash` readout is the determinism fingerprint — the same seed always produces the
+same world.
 
 ## Architecture (one core, two hosts)
 
