@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/sim-core", "crates/replay"]
+members = ["crates/sim-core", "crates/replay", "crates/wasm"]
+# Local `cargo build`/`test` stay fast on the native crates; the wasm host is built with
+# wasm-pack. CI still exercises everything via `--workspace`.
+default-members = ["crates/sim-core", "crates/replay"]
 
 [workspace.package]
 version = "0.0.1"

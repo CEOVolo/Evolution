@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Evolution — prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0f0c;
+        --panel: #12181400;
+        --ink: #d7e4d7;
+        --muted: #7f927f;
+        --accent: #6ee7a0;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      #app { display: flex; gap: 18px; padding: 18px; align-items: flex-start;
+        flex-wrap: wrap; }
+      .stage { position: relative; }
+      canvas { background: #050705; border: 1px solid #1e2a20; border-radius: 8px;
+        display: block; cursor: crosshair; image-rendering: pixelated; }
+      .hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted);
+        font-size: 12px; pointer-events: none; }
+      #panel { width: 280px; display: flex; flex-direction: column; gap: 14px; }
+      h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: .3px; }
+      h1 span { color: var(--accent); }
+      .sub { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+      .card { background: #10160f; border: 1px solid #1e2a20; border-radius: 10px;
+        padding: 12px 14px; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        margin: 8px 0; }
+      .row label { color: var(--muted); }
+      .stat { font-variant-numeric: tabular-nums; }
+      .stat b { color: var(--accent); font-weight: 600; }
+      button { background: #16241a; color: var(--ink); border: 1px solid #294; border-radius: 8px;
+        padding: 7px 12px; cursor: pointer; font: inherit; }
+      button:hover { background: #1d3122; }
+      button.primary { background: #1f5f3a; border-color: #2f7; }
+      input[type=range] { width: 130px; accent-color: var(--accent); }
+      select { background: #16241a; color: var(--ink); border: 1px solid #294;
+        border-radius: 8px; padding: 6px 8px; font: inherit; }
+      code { color: var(--accent); }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="stage">
+        <canvas id="c" width="640" height="640"></canvas>
+        <div class="hint" id="hint">click the world to use your brush</div>
+      </div>
+      <div id="panel">
+        <div>
+          <h1>Evolution <span>· prototype</span></h1>
+          <p class="sub">Phase-0 world running in your browser on the deterministic Rust core.
+            Rough &amp; brain-less for now — but alive, and yours to poke.</p>
+        </div>
+
+        <div class="card">
+          <div class="row"><button id="play" class="primary">⏸ Pause</button>
+            <button id="reset">↻ New world</button></div>
+          <div class="row"><label>Speed</label>
+            <input id="speed" type="range" min="1" max="20" value="4" /></div>
+        </div>
+
+        <div class="card">
+          <div class="row"><label>Brush</label>
+            <select id="brush">
+              <option value="food">🌱 Add food</option>
+              <option value="spawn">✱ Spawn cells</option>
+              <option value="kill">☠ Wipe area</option>
+            </select></div>
+          <div class="row"><label>Mutation</label>
+            <input id="mut" type="range" min="0" max="2000" value="1000" /></div>
+          <div class="row"><label>Food regrow</label>
+            <input id="regrow" type="range" min="0" max="30" value="6" /></div>
+          <div class="row"><label>Eat rate</label>
+            <input id="eat" type="range" min="5" max="150" value="60" /></div>
+        </div>
+
+        <div class="card mono">
+          <div class="row stat"><span>tick</span><b id="s-tick">0</b></div>
+          <div class="row stat"><span>population</span><b id="s-pop">0</b></div>
+          <div class="row stat"><span>state hash</span><b id="s-hash">—</b></div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

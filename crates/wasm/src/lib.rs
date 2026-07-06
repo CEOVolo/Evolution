@@ -1,0 +1,165 @@
+//! Browser host for `sim-core` via `wasm-bindgen`.
+//!
+//! A thin wrapper exposing the deterministic engine to JavaScript: advance the world,
+//! read render buffers, and issue commands (the single mutation channel). All simulation
+//! logic lives in `sim-core`; this crate only marshals data across the wasm boundary.
+
+use sim_core::{Command, CommandKind, ParamId, World, WorldParams};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub struct Sim {
+    world: World,
+    /// Commands queued from JS, applied on the next `tick`.
+    pending: Vec<Command>,
+}
+
+#[wasm_bindgen]
+impl Sim {
+    #[wasm_bindgen(constructor)]
+    pub fn new(seed: u32) -> Sim {
+        console_error_panic_hook::set_once();
+        Sim {
+            world: World::new(seed as u64, WorldParams::default()),
+            pending: Vec::new(),
+        }
+    }
+
+    /// Advance the world by `n` ticks. Queued commands are applied on the first tick.
+    pub fn tick(&mut self, n: u32) {
+        if n == 0 {
+            return;
+        }
+        let cmds = std::mem::take(&mut self.pending);
+        self.world.tick(&cmds);
+        for _ in 1..n {
+            self.world.tick(&[]);
+        }
+    }
+
+    // --- readouts ---------------------------------------------------------
+
+    pub fn population(&self) -> u32 {
+        self.world.population()
+    }
+
+    pub fn tick_count(&self) -> u32 {
+        self.world.tick_count as u32
+    }
+
+    pub fn world_w(&self) -> f32 {
+        self.world.params.width
+    }
+
+    pub fn world_h(&self) -> f32 {
+        self.world.params.height
+    }
+
+    pub fn grid_w(&self) -> u32 {
+        self.world.params.grid_w
+    }
+
+    pub fn grid_h(&self) -> u32 {
+        self.world.params.grid_h
+    }
+
+    /// 16-hex-digit state fingerprint (string, since a u64 can't round-trip through a JS
+    /// number). Handy for eyeballing determinism from the UI.
+    pub fn state_hash(&self) -> String {
+        format!("{:016x}", self.world.state_hash())
+    }
+
+    /// Live organism positions as `[x0, y0, x1, y1, ...]` in world coordinates.
+    pub fn positions(&self) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize * 2);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push(o.px[i]);
+                v.push(o.py[i]);
+            }
+        }
+        v
+    }
+
+    /// Live organism colours as `[r0, g0, b0, r1, g1, b1, ...]`, matching `positions` order.
+    pub fn colors(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize * 3);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push(o.cr[i]);
+                v.push(o.cg[i]);
+                v.push(o.cb[i]);
+            }
+        }
+        v
+    }
+
+    /// Resource field normalized to `0..=255`, row-major (`grid_w * grid_h`).
+    pub fn field(&self) -> Vec<u8> {
+        let cap = self.world.params.field_cap.max(1);
+        self.world
+            .field
+            .iter()
+            .map(|&c| ((c.max(0) * 255) / cap) as u8)
+            .collect()
+    }
+
+    // --- commands (the sole mutation channel) -----------------------------
+
+    /// Paint resource into a disc of grid cells (a "food brush").
+    pub fn inject(&mut self, cx: i32, cy: i32, radius: i32, amount: i32) {
+        self.pending
+            .push(Command::local(CommandKind::InjectSubstance {
+                cx,
+                cy,
+                radius,
+                amount: amount as i64,
+            }));
+    }
+
+    /// Spawn an organism at a grid cell.
+    pub fn spawn(&mut self, cx: i32, cy: i32, energy: i32) {
+        self.pending.push(Command::local(CommandKind::Spawn {
+            cx,
+            cy,
+            energy: energy as i64,
+        }));
+    }
+
+    /// Kill everything in an inclusive grid rectangle.
+    pub fn kill(&mut self, cx0: i32, cy0: i32, cx1: i32, cy1: i32) {
+        self.pending
+            .push(Command::local(CommandKind::Kill { cx0, cy0, cx1, cy1 }));
+    }
+
+    pub fn set_mutation_rate(&mut self, per_ten_thousand: i32) {
+        self.set_param(ParamId::MutationRate, per_ten_thousand as i64);
+    }
+
+    pub fn set_field_regrow(&mut self, raw: i32) {
+        self.set_param(ParamId::FieldRegrow, raw as i64);
+    }
+
+    pub fn set_eat_rate(&mut self, raw: i32) {
+        self.set_param(ParamId::EatRate, raw as i64);
+    }
+
+    pub fn set_max_speed(&mut self, thousandths: i32) {
+        self.set_param(ParamId::MaxSpeed, thousandths as i64);
+    }
+
+    /// Reset to a fresh world with a new seed (current params retained).
+    pub fn reset(&mut self, seed: u32) {
+        self.pending
+            .push(Command::local(CommandKind::Reset { seed: seed as u64 }));
+    }
+}
+
+impl Sim {
+    fn set_param(&mut self, key: ParamId, raw: i64) {
+        self.pending
+            .push(Command::local(CommandKind::SetParam { key, raw }));
+    }
+}
