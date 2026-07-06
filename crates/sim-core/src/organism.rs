@@ -1,21 +1,17 @@
 //! Organism storage — Structure-of-Arrays with a stable-id free-list slotmap.
 //!
-//! Each organism carries a fixed-topology recurrent brain: its weight vector and its live
-//! hidden activations live in flat side arrays indexed by slot (`weights` has stride
-//! [`N_W`], `hidden` has stride [`N_HID`]). The hidden activations are causally-required
-//! state — snapshotted and hashed. Iteration is index-ordered; ties break by stable `id`.
+//! Fixed-width scalar columns plus a per-organism [`Brain`] (variable-topology, so it lives
+//! in its own `Vec<Brain>` column rather than a flat stride). Iteration is index-ordered;
+//! ties break by stable `id`. Slots are reused from a LIFO free-list on death.
 
-use crate::brain::{Weights, N_HID, N_W};
+use crate::brain::Brain;
 use crate::math::Scalar;
 
-/// The Phase-1 genome: body/metabolism traits + colour. The brain's weights are stored
-/// separately (see [`Organisms::weights`]).
+/// The genome's body/metabolism traits + colour. The brain is stored separately.
 #[derive(Clone, Copy, Debug)]
 pub struct Genome {
-    /// Body size (mass): bigger can prey on smaller, but costs more upkeep and is slower.
     pub size: Scalar,
     pub metabolism: Scalar,
-    /// Per-organism reproduction-threshold multiplier (selection acts on a distribution).
     pub repro: Scalar,
     pub r: u8,
     pub g: u8,
@@ -23,7 +19,6 @@ pub struct Genome {
 }
 
 impl Genome {
-    /// A neutral baseline genome (used by the spawn brush).
     pub fn base() -> Self {
         Genome {
             size: 1.0,
@@ -54,13 +49,9 @@ pub struct Organisms {
     pub cr: Vec<u8>,
     pub cg: Vec<u8>,
     pub cb: Vec<u8>,
-    /// Running "how carnivorous" indicator in `0..=1` (rises on predation, decays). Display
-    /// + a small behavioural signal; part of hashed state.
     pub carnivory: Vec<Scalar>,
-    /// Brain weights, flat with stride `N_W`.
-    pub weights: Vec<Scalar>,
-    /// Brain hidden activations (recurrent state), flat with stride `N_HID`.
-    pub hidden: Vec<Scalar>,
+    /// Per-organism growing brain.
+    pub brains: Vec<Brain>,
 
     pub free: Vec<u32>,
     pub next_id: u32,
@@ -76,14 +67,13 @@ pub struct NewOrganism {
     pub parent: u32,
     pub birth_tick: u64,
     pub genome: Genome,
-    pub weights: Weights,
+    pub brain: Brain,
 }
 
 impl Organisms {
     pub fn with_capacity(cap: usize) -> Self {
         Organisms {
-            weights: Vec::with_capacity(cap * N_W),
-            hidden: Vec::with_capacity(cap * N_HID),
+            brains: Vec::with_capacity(cap),
             ..Default::default()
         }
     }
@@ -93,7 +83,6 @@ impl Organisms {
         self.alive.len()
     }
 
-    /// Insert an organism, assigning a fresh stable id. Returns `(slot, id)`.
     pub fn insert(&mut self, s: NewOrganism) -> (usize, u32) {
         let id = self.next_id;
         self.next_id += 1;
@@ -116,10 +105,7 @@ impl Organisms {
             self.cg[i] = s.genome.g;
             self.cb[i] = s.genome.b;
             self.carnivory[i] = 0.0;
-            self.weights[i * N_W..(i + 1) * N_W].copy_from_slice(&s.weights);
-            for h in &mut self.hidden[i * N_HID..(i + 1) * N_HID] {
-                *h = 0.0;
-            }
+            self.brains[i] = s.brain;
             i
         } else {
             self.alive.push(true);
@@ -139,8 +125,7 @@ impl Organisms {
             self.cg.push(s.genome.g);
             self.cb.push(s.genome.b);
             self.carnivory.push(0.0);
-            self.weights.extend_from_slice(&s.weights);
-            self.hidden.extend([0.0f32; N_HID]);
+            self.brains.push(s.brain);
             self.alive.len() - 1
         };
         self.count += 1;
@@ -165,12 +150,5 @@ impl Organisms {
             g: self.cg[i],
             b: self.cb[i],
         }
-    }
-
-    #[inline]
-    pub fn weights_at(&self, i: usize) -> Weights {
-        let mut w = [0.0; N_W];
-        w.copy_from_slice(&self.weights[i * N_W..(i + 1) * N_W]);
-        w
     }
 }

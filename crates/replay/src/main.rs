@@ -56,16 +56,18 @@ fn main() {
         deaths += ev.deaths();
         while cp < checkpoints.len() && checkpoints[cp] == t {
             println!(
-                "tick={t} pop={} hash={:016x}",
+                "tick={t} pop={} brain={:.1} hash={:016x}",
                 w.population(),
+                avg_complexity(&w),
                 w.state_hash()
             );
             cp += 1;
         }
     }
     println!(
-        "final seed={seed} ticks={ticks} pop={} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} births={births} deaths={deaths} hash={:016x}",
         w.population(),
+        avg_complexity(&w),
         w.state_hash()
     );
 }
@@ -124,6 +126,22 @@ fn run_sweep() {
             seeds.len(),
             if viable { "yes" } else { "" }
         );
+    }
+}
+
+fn avg_complexity(w: &World) -> f32 {
+    let o = &w.orgs;
+    let (mut s, mut n) = (0u64, 0u64);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            s += o.brains[i].complexity() as u64;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        s as f32 / n as f32
     }
 }
 

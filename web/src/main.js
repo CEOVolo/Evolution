@@ -101,7 +101,7 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn] = n;
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain] = n;
     const diet = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     inspectBody.innerHTML = `
       <div class="row" style="margin:0 0 8px">
@@ -112,7 +112,8 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>энергия</span><b>${energy | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>`;
+      <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>мозг 🧠 (нейроны+связи)</span><b>${brain | 0}</b></div>`;
   }
 
   // --- population chart + trait bars ---
@@ -167,6 +168,23 @@ async function main() {
     const dc = sim.deaths_recent(); // [starved, oldage, killed, predated]
     $("deaths").innerHTML =
       `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
+  }
+
+  function updateSpecies() {
+    $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
+    let list;
+    try {
+      list = JSON.parse(sim.species_json());
+    } catch {
+      return;
+    }
+    $("species").innerHTML = list
+      .map(
+        (s) =>
+          `<div class="row" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${s.r},${s.g},${s.b})"></span> ${s.name}</span>` +
+          `<span class="mono" style="color:var(--muted2)">${s.count.toLocaleString()} · 🔴${Math.round(s.carn * 100)}% · 🧠${s.brain}</span></div>`
+      )
+      .join("");
   }
 
   // --- toasts ---
@@ -248,6 +266,7 @@ async function main() {
       popEl.textContent = sim.population().toLocaleString();
       updateTraits();
       updateHealth();
+      updateSpecies();
       narrate();
     }
     frame++;

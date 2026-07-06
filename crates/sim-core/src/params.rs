@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 2;
+pub const PARAMS_SCHEMA_VERSION: u16 = 3;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -67,6 +67,10 @@ pub struct WorldParams {
     pub mutation_rate: Scalar,
     pub mutation_delta: Scalar,
     pub weight_mut_delta: Scalar,
+    /// Per-birth probability of adding a brain connection.
+    pub add_conn_prob: Scalar,
+    /// Per-birth probability of adding (splitting in) a brain node.
+    pub add_node_prob: Scalar,
 
     // initial conditions / limits
     pub initial_population: u32,
@@ -96,7 +100,7 @@ impl Default for WorldParams {
             predation_gain_num: 3,
             predation_gain_den: 4,
 
-            basal_upkeep: 2,
+            basal_upkeep: 1,
             brain_cost: 1,
             size_upkeep: 2,
             eat_rate: 60,
@@ -111,6 +115,8 @@ impl Default for WorldParams {
             mutation_rate: 0.10,
             mutation_delta: 0.10,
             weight_mut_delta: 0.35,
+            add_conn_prob: 0.06,
+            add_node_prob: 0.02,
 
             initial_population: 300,
             initial_energy: 250,

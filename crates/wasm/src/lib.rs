@@ -234,6 +234,71 @@ impl Sim {
         }
     }
 
+    /// Average brain complexity (hidden nodes + enabled connections) — watch it climb.
+    pub fn avg_brain_complexity(&self) -> f32 {
+        let o = &self.world.orgs;
+        let (mut s, mut n) = (0u64, 0u64);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                s += o.brains[i].complexity() as u64;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            s as f32 / n as f32
+        }
+    }
+
+    /// Per-colour-group ("species") breakdown as a JSON array, sorted by count descending.
+    pub fn species_json(&self) -> String {
+        const NAMES: [&str; 8] = [
+            "тёмные",
+            "синие",
+            "зелёные",
+            "бирюзовые",
+            "красные",
+            "розовые",
+            "жёлтые",
+            "светлые",
+        ];
+        let o = &self.world.orgs;
+        let mut count = [0u32; 8];
+        let mut size = [0f32; 8];
+        let mut carn = [0f32; 8];
+        let mut brain = [0f32; 8];
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let bkt = (((o.cr[i] > 127) as usize) << 2)
+                    | (((o.cg[i] > 127) as usize) << 1)
+                    | ((o.cb[i] > 127) as usize);
+                count[bkt] += 1;
+                size[bkt] += o.g_size[i];
+                carn[bkt] += o.carnivory[i];
+                brain[bkt] += o.brains[i].complexity() as f32;
+            }
+        }
+        let mut order: Vec<usize> = (0..8).filter(|&b| count[b] > 0).collect();
+        order.sort_by(|&a, &b| count[b].cmp(&count[a]));
+        let mut out = String::from("[");
+        for (k, &b) in order.iter().enumerate() {
+            if k > 0 {
+                out.push(',');
+            }
+            let n = count[b] as f32;
+            let r = if b & 4 != 0 { 210 } else { 45 };
+            let g = if b & 2 != 0 { 210 } else { 45 };
+            let bl = if b & 1 != 0 { 210 } else { 45 };
+            out.push_str(&format!(
+                "{{\"name\":\"{}\",\"count\":{},\"size\":{:.2},\"carn\":{:.2},\"brain\":{:.1},\"r\":{},\"g\":{},\"b\":{}}}",
+                NAMES[b], count[b], size[b] / n, carn[b] / n, brain[b] / n, r, g, bl
+            ));
+        }
+        out.push(']');
+        out
+    }
+
     // --- presets ----------------------------------------------------------
 
     pub fn preset_count() -> u32 {
@@ -285,6 +350,7 @@ impl Sim {
             o.cb[i] as f32,
             o.id[i] as f32,
             o.carnivory[i],
+            o.brains[i].complexity() as f32,
         ]
     }
 

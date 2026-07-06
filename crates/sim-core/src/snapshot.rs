@@ -2,18 +2,19 @@
 //!
 //! The canonical shareable unit (and, later, a multiplayer keyframe) is a **state** snapshot.
 //! We serialize the *entire* `World` — including the full slot layout, every organism's brain
-//! weights and recurrent hidden state, the free-list, and next-id — so a reloaded world
-//! reproduces byte-identical future ticks (`snapshot@K → N == uninterrupted@N`).
+//! (variable-topology nodes/connections + recurrent activations), the free-list, and next-id
+//! — so a reloaded world reproduces byte-identical future ticks
+//! (`snapshot@K → N == uninterrupted@N`).
 //!
 //! Hand-rolled little-endian with a magic + version header; floats stored as raw `to_bits()`.
 
-use crate::brain::{N_HID, N_W};
+use crate::brain::{Brain, Conn};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F32; // "EVO2"
-const VERSION: u16 = 2;
+const MAGIC: u32 = 0x45564F33; // "EVO3"
+const VERSION: u16 = 3;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -91,6 +92,8 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.f32(p.mutation_rate);
     o.f32(p.mutation_delta);
     o.f32(p.weight_mut_delta);
+    o.f32(p.add_conn_prob);
+    o.f32(p.add_node_prob);
     o.u32(p.initial_population);
     o.i64(p.initial_energy);
     o.u32(p.max_population);
@@ -126,9 +129,60 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         mutation_rate: r.f32()?,
         mutation_delta: r.f32()?,
         weight_mut_delta: r.f32()?,
+        add_conn_prob: r.f32()?,
+        add_node_prob: r.f32()?,
         initial_population: r.u32()?,
         initial_energy: r.i64()?,
         max_population: r.u32()?,
+    })
+}
+
+fn write_brain(o: &mut Writer, br: &Brain) {
+    o.u32(br.n_hidden as u32);
+    o.u32(br.conns.len() as u32);
+    for c in &br.conns {
+        o.u32(c.from);
+        o.u32(c.to);
+        o.f32(c.w);
+        o.bool(c.enabled);
+    }
+    o.u32(br.bias.len() as u32);
+    for &x in &br.bias {
+        o.f32(x);
+    }
+    o.u32(br.act.len() as u32);
+    for &x in &br.act {
+        o.f32(x);
+    }
+}
+
+fn read_brain(r: &mut Reader) -> Result<Brain, SnapshotError> {
+    let n_hidden = r.u32()? as u16;
+    let nc = r.u32()? as usize;
+    let mut conns = Vec::with_capacity(nc);
+    for _ in 0..nc {
+        conns.push(Conn {
+            from: r.u32()?,
+            to: r.u32()?,
+            w: r.f32()?,
+            enabled: r.bool()?,
+        });
+    }
+    let nb = r.u32()? as usize;
+    let mut bias = Vec::with_capacity(nb);
+    for _ in 0..nb {
+        bias.push(r.f32()?);
+    }
+    let na = r.u32()? as usize;
+    let mut act = Vec::with_capacity(na);
+    for _ in 0..na {
+        act.push(r.f32()?);
+    }
+    Ok(Brain {
+        n_hidden,
+        bias,
+        act,
+        conns,
     })
 }
 
@@ -153,12 +207,7 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.u8(s.cg[i]);
         o.u8(s.cb[i]);
         o.f32(s.carnivory[i]);
-        for k in 0..N_W {
-            o.f32(s.weights[i * N_W + k]);
-        }
-        for k in 0..N_HID {
-            o.f32(s.hidden[i * N_HID + k]);
-        }
+        write_brain(o, &s.brains[i]);
     }
     o.u32(s.free.len() as u32);
     for &f in &s.free {
@@ -189,12 +238,7 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.cg.push(r.u8()?);
         s.cb.push(r.u8()?);
         s.carnivory.push(r.f32()?);
-        for _ in 0..N_W {
-            s.weights.push(r.f32()?);
-        }
-        for _ in 0..N_HID {
-            s.hidden.push(r.f32()?);
-        }
+        s.brains.push(read_brain(r)?);
     }
     let free_len = r.u32()? as usize;
     s.free = Vec::with_capacity(free_len);

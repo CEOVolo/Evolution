@@ -1,30 +1,25 @@
-//! A small **evolvable recurrent neural network** — the organism's controller.
+//! An evolvable, **growing** recurrent neural network — the organism's controller.
 //!
-//! Phase 1 uses a *fixed topology* (evolving weights, not structure yet — topology-growing
-//! NEAT comes later). It is recurrent: each hidden node keeps its activation between ticks,
-//! giving the organism memory. That recurrent state is causally-required world state, so it
-//! is snapshotted and hashed (see `World::state_hash` / `snapshot`).
+//! Unlike the earlier fixed-topology net, brains here start minimal and gain nodes and
+//! connections over generations (NEAT-style structural mutation): `add-connection` wires two
+//! existing nodes; `add-node` splits a connection with identity-preserving weights (in-edge
+//! = 1, out-edge = old weight) so the new structure is behaviourally near-neutral and can be
+//! tuned later. Brain size is metabolically taxed, so complexity only sticks when it pays.
 //!
-//! Determinism: the forward pass uses only `+ - *` and the deterministic [`tanh_det`]; it is
-//! a single synchronous update that reads the *previous* tick's hidden activations, evaluated
-//! in fixed index order. No `std`/`libm` transcendentals, no FMA.
+//! Node layout by index: `0..N_IN` inputs, `N_IN..N_IN+N_OUT` outputs, the rest hidden
+//! (append-only, so indices are stable across mutation and reproduction). The forward pass is
+//! a single synchronous update: sums are accumulated from the *previous* tick's activations
+//! (recurrent), inputs are injected same-tick, then all non-input nodes update together —
+//! fixed order, deterministic, only `+ - *` and the deterministic [`tanh_det`].
 
 use crate::math::{tanh_det, Scalar};
+use crate::rng::Pcg32;
 
-/// Sensor inputs.
 pub const N_IN: usize = 8;
-/// Recurrent hidden nodes (the organism's "memory").
-pub const N_HID: usize = 6;
-/// Actuator outputs.
 pub const N_OUT: usize = 4;
+pub const OUT_BASE: usize = N_IN;
 
-/// Total weights: in→hid, hid→hid (recurrent), hid→out, hidden biases, output biases.
-pub const N_W: usize = N_IN * N_HID + N_HID * N_HID + N_HID * N_OUT + N_HID + N_OUT;
-
-/// A brain's weight vector.
-pub type Weights = [Scalar; N_W];
-
-// Input indices (kept as named constants so sensing/thinking agree).
+// Input semantics.
 pub const IN_BIAS: usize = 0;
 pub const IN_FOOD: usize = 1;
 pub const IN_GRAD_X: usize = 2;
@@ -34,51 +29,170 @@ pub const IN_NN_DX: usize = 5;
 pub const IN_NN_DY: usize = 6;
 pub const IN_NN_RELSIZE: usize = 7;
 
-// Output indices.
+// Output semantics.
 pub const OUT_AX: usize = 0;
 pub const OUT_AY: usize = 1;
 pub const OUT_BITE: usize = 2;
 pub const OUT_REPRO: usize = 3;
 
-// Weight-block offsets within the flat vector.
-const OFF_WHH: usize = N_IN * N_HID;
-const OFF_WHO: usize = OFF_WHH + N_HID * N_HID;
-const OFF_BH: usize = OFF_WHO + N_HID * N_OUT;
-const OFF_BO: usize = OFF_BH + N_HID;
-
-/// Zeroed brain (a passive organism — outputs are `tanh(0) = 0`).
-pub fn zero_weights() -> Weights {
-    [0.0; N_W]
+#[derive(Clone, Debug)]
+pub struct Conn {
+    pub from: u32,
+    pub to: u32,
+    pub w: Scalar,
+    pub enabled: bool,
 }
 
-/// One synchronous forward pass. Reads `hidden` (previous tick) and overwrites it with the
-/// new activations; returns the output vector.
-pub fn forward(
-    w: &[Scalar],
-    hidden: &mut [Scalar; N_HID],
-    inputs: &[Scalar; N_IN],
-) -> [Scalar; N_OUT] {
-    let mut nh = [0.0f32; N_HID];
-    for j in 0..N_HID {
-        let mut s = w[OFF_BH + j];
-        for i in 0..N_IN {
-            s += inputs[i] * w[i * N_HID + j];
-        }
-        for k in 0..N_HID {
-            s += hidden[k] * w[OFF_WHH + k * N_HID + j];
-        }
-        nh[j] = tanh_det(s);
+#[derive(Clone, Debug)]
+pub struct Brain {
+    pub n_hidden: u16,
+    /// Bias per node (`len == total_nodes`; input biases unused).
+    pub bias: Vec<Scalar>,
+    /// Recurrent activations per node (`len == total_nodes`).
+    pub act: Vec<Scalar>,
+    pub conns: Vec<Conn>,
+}
+
+impl Brain {
+    #[inline]
+    pub fn total_nodes(&self) -> usize {
+        N_IN + N_OUT + self.n_hidden as usize
     }
-    let mut out = [0.0f32; N_OUT];
-    for o in 0..N_OUT {
-        let mut s = w[OFF_BO + o];
-        for j in 0..N_HID {
-            s += nh[j] * w[OFF_WHO + j * N_OUT + o];
+
+    /// A minimal random brain: a few random input→output connections, no hidden nodes.
+    pub fn random_minimal(rng: &mut Pcg32) -> Brain {
+        let total = N_IN + N_OUT;
+        let mut b = Brain {
+            n_hidden: 0,
+            bias: vec![0.0; total],
+            act: vec![0.0; total],
+            conns: Vec::new(),
+        };
+        for o in 0..N_OUT {
+            let n_links = 1 + rng.below(2) as usize; // 1..=2
+            for _ in 0..n_links {
+                let from = rng.below(N_IN as u32);
+                b.conns.push(Conn {
+                    from,
+                    to: (OUT_BASE + o) as u32,
+                    w: rng.next_f32_signed() * 1.2,
+                    enabled: true,
+                });
+            }
+            b.bias[OUT_BASE + o] = rng.next_f32_signed() * 0.5;
         }
-        out[o] = tanh_det(s);
+        b
     }
-    *hidden = nh;
-    out
+
+    /// Zero the recurrent activations (called at birth, so development is deterministic).
+    pub fn reset_state(&mut self) {
+        for a in self.act.iter_mut() {
+            *a = 0.0;
+        }
+    }
+
+    /// One synchronous forward pass. `scratch` is a reusable buffer (grows to the brain's node
+    /// count) so the hot path does not allocate per organism.
+    pub fn forward(
+        &mut self,
+        inputs: &[Scalar; N_IN],
+        scratch: &mut Vec<Scalar>,
+    ) -> [Scalar; N_OUT] {
+        let total = self.total_nodes();
+        self.act[..N_IN].copy_from_slice(inputs);
+        scratch.clear();
+        scratch.resize(total, 0.0);
+        scratch[N_IN..total].copy_from_slice(&self.bias[N_IN..total]);
+        for c in &self.conns {
+            if c.enabled {
+                scratch[c.to as usize] += self.act[c.from as usize] * c.w;
+            }
+        }
+        let mut out = [0.0f32; N_OUT];
+        for node in N_IN..total {
+            let a = tanh_det(scratch[node]);
+            self.act[node] = a;
+            if (OUT_BASE..OUT_BASE + N_OUT).contains(&node) {
+                out[node - OUT_BASE] = a;
+            }
+        }
+        out
+    }
+
+    pub fn enabled_conns(&self) -> usize {
+        self.conns.iter().filter(|c| c.enabled).count()
+    }
+
+    /// Hidden nodes + enabled connections — used for the metabolic tax and for display.
+    pub fn complexity(&self) -> usize {
+        self.n_hidden as usize + self.enabled_conns()
+    }
+
+    /// Mutate weights, biases, and (rarely) topology.
+    pub fn mutate(
+        &mut self,
+        rng: &mut Pcg32,
+        rate: f32,
+        w_delta: f32,
+        add_conn_p: f32,
+        add_node_p: f32,
+    ) {
+        for c in self.conns.iter_mut() {
+            if rng.chance(rate) {
+                c.w = (c.w + rng.next_f32_signed() * w_delta).clamp(-5.0, 5.0);
+            }
+        }
+        for node in N_IN..self.total_nodes() {
+            if rng.chance(rate * 0.5) {
+                self.bias[node] =
+                    (self.bias[node] + rng.next_f32_signed() * w_delta).clamp(-5.0, 5.0);
+            }
+        }
+        // add-connection: wire any node -> a non-input node (skip exact duplicates).
+        if rng.chance(add_conn_p) {
+            let total = self.total_nodes() as u32;
+            let from = rng.below(total);
+            let to = OUT_BASE as u32 + rng.below((N_OUT + self.n_hidden as usize) as u32);
+            if !self.conns.iter().any(|c| c.from == from && c.to == to) {
+                self.conns.push(Conn {
+                    from,
+                    to,
+                    w: rng.next_f32_signed() * 1.0,
+                    enabled: true,
+                });
+            }
+        }
+        // add-node: split an enabled connection with identity-preserving weights.
+        if rng.chance(add_node_p) {
+            let enabled: Vec<usize> = (0..self.conns.len())
+                .filter(|&i| self.conns[i].enabled)
+                .collect();
+            if !enabled.is_empty() {
+                let pick = enabled[rng.below(enabled.len() as u32) as usize];
+                let (from, to, w) = {
+                    let c = &self.conns[pick];
+                    (c.from, c.to, c.w)
+                };
+                self.conns[pick].enabled = false;
+                let new_idx = (N_IN + N_OUT + self.n_hidden as usize) as u32;
+                self.n_hidden += 1;
+                self.bias.push(0.0);
+                self.act.push(0.0);
+                self.conns.push(Conn {
+                    from,
+                    to: new_idx,
+                    w: 1.0,
+                    enabled: true,
+                });
+                self.conns.push(Conn {
+                    from: new_idx,
+                    to,
+                    w,
+                    enabled: true,
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -86,32 +200,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn weight_count_matches() {
-        assert_eq!(N_W, 48 + 36 + 24 + 6 + 4);
-        assert_eq!(zero_weights().len(), N_W);
-    }
-
-    #[test]
-    fn zero_brain_is_passive() {
-        let w = zero_weights();
-        let mut h = [0.0; N_HID];
-        let out = forward(&w, &mut h, &[0.0; N_IN]);
-        assert_eq!(out, [0.0; N_OUT]);
-    }
-
-    #[test]
-    fn forward_is_deterministic() {
-        let mut w = zero_weights();
-        for (i, x) in w.iter_mut().enumerate() {
-            *x = ((i as f32 * 0.123).fract() - 0.5) * 2.0;
-        }
+    fn forward_is_deterministic_and_grows() {
+        let mut rng = Pcg32::new(1, 1);
+        let mut b = Brain::random_minimal(&mut rng);
         let inp = [1.0, 0.4, -0.2, 0.1, 0.7, -0.3, 0.2, 0.5];
-        let mut ha = [0.1; N_HID];
-        let mut hb = [0.1; N_HID];
+        let mut s1 = Vec::new();
+        let mut s2 = Vec::new();
+        let mut ba = b.clone();
         for _ in 0..50 {
-            let a = forward(&w, &mut ha, &inp);
-            let b = forward(&w, &mut hb, &inp);
-            assert_eq!(a, b);
+            assert_eq!(b.forward(&inp, &mut s1), ba.forward(&inp, &mut s2));
         }
+        let before = b.complexity();
+        // force a bunch of structural mutations
+        let mut m = Pcg32::new(9, 1);
+        for _ in 0..40 {
+            b.mutate(&mut m, 0.0, 0.0, 1.0, 1.0);
+        }
+        assert!(b.complexity() > before, "brain did not grow");
+        // still evaluates without panicking and is deterministic
+        let mut c = b.clone();
+        assert_eq!(b.forward(&inp, &mut s1), c.forward(&inp, &mut s2));
     }
 }
