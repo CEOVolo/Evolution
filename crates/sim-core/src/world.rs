@@ -242,12 +242,14 @@ impl World {
                 // Two foods, half the budget each and anti-correlated: A follows fertility, B is
                 // rich exactly where A is poor. Blooms are lush green patches, so they boost A.
                 let mut rg_a = (base as f32 * day_factor * t * 0.5) as i64;
-                let rg_b = (base as f32 * day_factor * (2.05 - t) * 0.5) as i64;
+                let mut rg_b = (base as f32 * day_factor * (2.05 - t) * 0.5) as i64;
                 for &(bx, by) in &self.blooms {
                     let dx = ccx - bx;
                     let dy = ccy - by;
                     if dx * dx + dy * dy <= BLOOM_RADIUS_SQ {
+                        // a bloom is a lush oasis for both foods — don't privilege A
                         rg_a += boost;
+                        rg_b += boost;
                         break;
                     }
                 }
@@ -264,8 +266,12 @@ impl World {
             let dec = self.detritus[c] / ddiv;
             if dec > 0 {
                 self.detritus[c] -= dec;
-                let v = self.field[c] + dec;
-                self.field[c] = if v > cap { cap } else { v };
+                // corpses enrich both soils, so scavenging doesn't privilege the food-A niche
+                let half = dec / 2;
+                let va = self.field[c] + half;
+                self.field[c] = if va > cap { cap } else { va };
+                let vb = self.field_b[c] + (dec - half);
+                self.field_b[c] = if vb > cap { cap } else { vb };
             }
         }
 
