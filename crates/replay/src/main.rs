@@ -65,7 +65,7 @@ fn main() {
         }
     }
     println!(
-        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} chem(em/up/res/sen)={}/{}/{}/{} births={births} deaths={deaths} hash={:016x}",
         w.population(),
         avg_complexity(&w),
         carn_frac(&w) * 100.0,
@@ -74,6 +74,10 @@ fn main() {
         diet_split(&w).0,
         diet_split(&w).1,
         diet_split(&w).2,
+        chem_roles(&w).0,
+        chem_roles(&w).1,
+        chem_roles(&w).2,
+        chem_roles(&w).3,
         w.state_hash()
     );
 }
@@ -187,6 +191,30 @@ fn diet_split(w: &World) -> (u32, u32, u32) {
         }
     }
     (a, g, b)
+}
+
+/// Count organisms carrying each chemical role — how many emit, uptake, resist, sense any
+/// channel. Two of these overlapping on one channel (emit + uptake) is cross-feeding forming.
+fn chem_roles(w: &World) -> (u32, u32, u32, u32) {
+    let o = &w.orgs;
+    let (mut em, mut up, mut re, mut se) = (0u32, 0u32, 0u32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            if o.emit_ch[i].iter().any(|&x| x > 0) {
+                em += 1;
+            }
+            if o.uptake_ch[i].iter().any(|&x| x > 0) {
+                up += 1;
+            }
+            if o.resist_mask[i] != 0 {
+                re += 1;
+            }
+            if o.sense_mask[i] != 0 {
+                se += 1;
+            }
+        }
+    }
+    (em, up, re, se)
 }
 
 fn carn_frac(w: &World) -> f32 {

@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 8;
+pub const PARAMS_SCHEMA_VERSION: u16 = 9;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -88,6 +88,39 @@ pub struct WorldParams {
     /// Energy drained per tick per neighbour inside `crowd_radius`.
     pub crowd_cost: i64,
 
+    // chemistry (M2) — generic chemical channels whose meaning evolution assigns. All integer
+    // for exact, cross-target-deterministic accumulation.
+    /// Per-cell clamp on a channel's concentration.
+    pub chan_cap: i64,
+    /// Per-tick channel decay (`* num / den`), like the signal field.
+    pub chan_decay_num: i64,
+    pub chan_decay_den: i64,
+    /// Diffusion divisor: each cell donates `conc/div` to EACH of 4 neighbours, so must be `>= 4`
+    /// to stay non-negative; `< 4` (incl. the default `0`) turns diffusion off.
+    pub chan_diffuse_div: i64,
+    /// Excreted amount = `emit_base + intake * strength / emit_den` per emitting gene (free — the
+    /// emitter is not debited, so cross-feeding can bootstrap).
+    pub chan_emit_base: i64,
+    pub chan_emit_den: i64,
+    /// Max channel absorbed per tick at full uptake strength.
+    pub chan_uptake_rate: i64,
+    /// Uptake→energy conversion (`* num / den`, lossy: `num < den`). Lossiness *bounds* the free
+    /// emit→uptake loop rather than forbidding it — keep `255·num < emit_den·den` (loop gain < 1),
+    /// which `World::new` asserts. At defaults the loop converges to ~1.5× food energy.
+    pub chan_uptake_num: i64,
+    pub chan_uptake_den: i64,
+    /// Metabolic upkeep per uptake gene carried.
+    pub chan_uptake_upkeep: i64,
+    /// A channel above this concentration is toxic to non-resistant organisms at the cell.
+    pub chan_toxic_threshold: i64,
+    /// Toxin drain = `(conc - threshold) * toxin_num / toxin_den` per toxic channel.
+    pub chan_toxin_num: i64,
+    pub chan_toxin_den: i64,
+    /// Metabolic upkeep per resistance gene carried.
+    pub chan_resist_upkeep: i64,
+    /// Normalization divisor for a sensed channel fed to the brain.
+    pub chan_sense_cap: i64,
+
     // metabolism
     pub basal_upkeep: i64,
     pub brain_cost: i64,
@@ -161,6 +194,22 @@ impl Default for WorldParams {
 
             crowd_radius: 10.0,
             crowd_cost: 2,
+
+            chan_cap: 1000,
+            chan_decay_num: 9,
+            chan_decay_den: 10,
+            chan_diffuse_div: 0,
+            chan_emit_base: 2,
+            chan_emit_den: 255,
+            chan_uptake_rate: 60,
+            chan_uptake_num: 1,
+            chan_uptake_den: 3,
+            chan_uptake_upkeep: 2,
+            chan_toxic_threshold: 400,
+            chan_toxin_num: 1,
+            chan_toxin_den: 20,
+            chan_resist_upkeep: 2,
+            chan_sense_cap: 1000,
 
             basal_upkeep: 1,
             brain_cost: 1,

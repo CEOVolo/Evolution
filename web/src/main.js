@@ -192,10 +192,14 @@ async function main() {
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, tag) {
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, tag) {
     const pred = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
     const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
+    const chem =
+      emit + uptake + resist + sense > 0
+        ? `выд ${emit | 0} · погл ${uptake | 0} · уст ${resist | 0} · чувств ${sense | 0}`
+        : "—";
     return `
       <div class="row" style="margin:0 0 8px">
         <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
@@ -209,7 +213,8 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>геном 🧬</span><b>${genes | 0} генов</b></div>`;
+      <div class="row mono" style="margin:4px 0"><span>геном 🧬</span><b>${genes | 0} генов</b></div>
+      <div class="row mono" style="margin:4px 0"><span>химия 🧪</span><b>${chem}</b></div>`;
   }
   function inspectHover(mx, my) {
     const now = performance.now();
@@ -221,8 +226,8 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, "");
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, "");
   }
 
   // --- population chart + trait bars ---
@@ -310,6 +315,32 @@ async function main() {
         return row + (s.bkt === selectedSpecies ? speciesDetail(s) : "");
       })
       .join("");
+  }
+  function updateChem() {
+    let counts;
+    try {
+      counts = sim.channel_role_counts();
+    } catch {
+      return;
+    }
+    const nchan = counts.length / 4;
+    let html = "";
+    for (let k = 0; k < nchan; k++) {
+      const em = counts[k * 4],
+        up = counts[k * 4 + 1],
+        re = counts[k * 4 + 2],
+        se = counts[k * 4 + 3];
+      if (em + up + re + se === 0) continue;
+      // flag emergent relationships (never labelled in the engine — inferred from measured genes)
+      let tag = "";
+      if (em > 0 && up > 0) tag = ' <span style="color:var(--accent)">↺ кросс-фидинг</span>';
+      else if (em > 0 && re > 0) tag = ' <span style="color:#e7c76e">☠ детокс/война</span>';
+      html +=
+        `<div class="row" style="margin:0"><span>в-во ${k}${tag}</span>` +
+        `<span class="mono" style="color:var(--muted2)">выд ${em} · погл ${up} · уст ${re} · чув ${se}</span></div>`;
+    }
+    $("chem").innerHTML =
+      html || '<span style="color:var(--muted2)">химию пока никто не освоил</span>';
   }
   function updateRecords() {
     let list;
@@ -469,11 +500,12 @@ async function main() {
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes] = info;
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes, emit, uptake, resist, sense] = info;
     cam.x = px;
     cam.y = py;
     inspectBody.innerHTML = cellCard(
       px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet, genes,
+      emit, uptake, resist, sense,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }
@@ -495,6 +527,7 @@ async function main() {
       updateTraits();
       updateHealth();
       updateSpecies();
+      updateChem();
       updateRecords();
       narrate();
     }

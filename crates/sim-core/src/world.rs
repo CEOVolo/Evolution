@@ -10,7 +10,7 @@
 //! Fixed phase order per tick: 1. commands, 2. drift blooms + regrow fields + decay signal,
 //! 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
 
-use crate::brain::{self, Brain, OUT_AX, OUT_AY};
+use crate::brain::{self, Brain, N_CHAN, OUT_AX, OUT_AY};
 use crate::command::{Command, CommandKind};
 use crate::environment::SpatialHash;
 use crate::event::{DeathCause, Event, EventBatch};
@@ -46,6 +46,9 @@ pub struct World {
     pub detritus: Vec<i64>,
     /// Pheromone/signal field (one integer per grid cell); decays over time.
     pub signal: Vec<i64>,
+    /// Generic chemical channels (M2): `N_CHAN` integer fields flattened as `k*cells + idx`.
+    /// Their meaning (food / toxin / signal) is assigned by evolution, not by us.
+    pub chan: Vec<i64>,
     /// Drifting bloom centres where regrowth is boosted.
     pub blooms: Vec<(Scalar, Scalar)>,
     pub orgs: Organisms,
@@ -62,6 +65,13 @@ struct PendingBirth {
 
 impl World {
     pub fn new(seed: u64, params: WorldParams) -> Self {
+        // Chemistry conservation guard: the emit→uptake loop's per-hop gain must be < 1, else a
+        // channel pins at its cap and the population booms (see `step_organism`). Emit at max
+        // strength adds `255/chan_emit_den` per unit intake; uptake returns `num/den` of it.
+        debug_assert!(
+            255 * params.chan_uptake_num < params.chan_emit_den * params.chan_uptake_den,
+            "chemistry loop gain must be < 1: 255·chan_uptake_num < chan_emit_den·chan_uptake_den"
+        );
         let cells = params.cell_count();
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
         let mut brng = Pcg32::from_key(seed, subsystem::BLOOM, 0);
@@ -82,6 +92,7 @@ impl World {
             elevation,
             detritus: vec![0; cells],
             signal: vec![0; cells],
+            chan: vec![0; N_CHAN * cells],
             blooms,
             orgs: Organisms::with_capacity(params.initial_population as usize),
             hash,
@@ -121,6 +132,7 @@ impl World {
         elevation: Vec<Scalar>,
         detritus: Vec<i64>,
         signal: Vec<i64>,
+        chan: Vec<i64>,
         blooms: Vec<(Scalar, Scalar)>,
         orgs: Organisms,
     ) -> Self {
@@ -135,6 +147,7 @@ impl World {
             elevation,
             detritus,
             signal,
+            chan,
             blooms,
             orgs,
             hash,
@@ -272,6 +285,43 @@ impl World {
             *s = *s * 9 / 10;
         }
 
+        // Diffuse + decay the chemical channels (M2). Integer, mass-conserving (double-buffered),
+        // toroidal — so a substance one lineage emits spreads and settles before others sense it.
+        // Each cell donates `conc/ddiv` to EACH of 4 neighbours, so `ddiv` must be >= 4 or a cell
+        // over-donates and goes negative; `< 4` means diffusion is off.
+        let cells = gw * gh;
+        let ddiv = self.params.chan_diffuse_div;
+        if ddiv >= 4 {
+            let mut buf = vec![0i64; cells];
+            for k in 0..N_CHAN {
+                let base = k * cells;
+                for (idx, b) in buf.iter_mut().enumerate() {
+                    *b = self.chan[base + idx] / ddiv;
+                }
+                for cy in 0..gh {
+                    for cx in 0..gw {
+                        let i = cy * gw + cx;
+                        let xm = (cx + gw - 1) % gw;
+                        let xp = (cx + 1) % gw;
+                        let ym = (cy + gh - 1) % gh;
+                        let yp = (cy + 1) % gh;
+                        let inflow = buf[cy * gw + xm]
+                            + buf[cy * gw + xp]
+                            + buf[ym * gw + cx]
+                            + buf[yp * gw + cx];
+                        self.chan[base + i] = self.chan[base + i] - 4 * buf[i] + inflow;
+                    }
+                }
+            }
+        }
+        let (cdn, cdd) = (
+            self.params.chan_decay_num,
+            self.params.chan_decay_den.max(1),
+        );
+        for c in self.chan.iter_mut() {
+            *c = *c * cdn / cdd;
+        }
+
         self.hash.rebuild(&self.orgs);
 
         let tick = self.tick_count;
@@ -341,6 +391,7 @@ impl World {
     ) {
         let p = &self.params;
         let cap = p.field_cap as f32;
+        let cells = p.cell_count();
         let sx = self.orgs.px[i];
         let sy = self.orgs.py[i];
         let size = self.orgs.g_size[i];
@@ -374,19 +425,29 @@ impl World {
             None => (0.0, 0.0, 0.0),
         };
 
-        let inputs = [
-            1.0,
-            food,
-            grad_x,
-            grad_y,
-            energy_in,
-            nn_dx,
-            nn_dy,
-            nn_relsize,
-            daylight * 2.0 - 1.0,
-            signal_in,
-            elev_in,
-        ];
+        let mut inputs = [0.0f32; brain::N_IN];
+        inputs[brain::IN_BIAS] = 1.0;
+        inputs[brain::IN_FOOD] = food;
+        inputs[brain::IN_GRAD_X] = grad_x;
+        inputs[brain::IN_GRAD_Y] = grad_y;
+        inputs[brain::IN_ENERGY] = energy_in;
+        inputs[brain::IN_NN_DX] = nn_dx;
+        inputs[brain::IN_NN_DY] = nn_dy;
+        inputs[brain::IN_NN_RELSIZE] = nn_relsize;
+        inputs[brain::IN_DAYLIGHT] = daylight * 2.0 - 1.0;
+        inputs[brain::IN_SIGNAL] = signal_in;
+        inputs[brain::IN_ELEVATION] = elev_in;
+        // Chemical senses: a channel slot carries information only where a Sense gene made it live.
+        let sm = self.orgs.sense_mask[i];
+        if sm != 0 {
+            let sense_cap = p.chan_sense_cap.max(1) as f32;
+            for k in 0..N_CHAN {
+                if sm & (1 << k) != 0 {
+                    let c = self.chan[k * cells + here];
+                    inputs[brain::IN_CHAN0 + k] = (c as f32 / sense_cap).min(1.0);
+                }
+            }
+        }
 
         // --- think ---
         let out = self.orgs.brains[i].forward(&inputs, scratch);
@@ -413,6 +474,41 @@ impl World {
         let from_det = scav.min(self.detritus[fi]);
         self.detritus[fi] -= from_det;
         self.orgs.energy[i] += got_a + got_b + from_det;
+
+        // --- chemistry: absorb channels this lineage digests ---
+        // Emit (below) is a FREE byproduct — necessary so cross-feeding can bootstrap (a costed
+        // emit would be pure altruism and get selected away). Uptake is lossy, which *bounds* the
+        // emit→uptake loop rather than forbidding it: the per-hop gain
+        // `(255/chan_emit_den)·(chan_uptake_num/chan_uptake_den)` is 1/3 at defaults (< 1), so the
+        // geometric series converges to ~1.5× the underlying food energy (a modelled
+        // residual-energy-of-waste input, not strict conservation). The `< 1` invariant is asserted
+        // in `World::new`; break it and a channel pins at cap and the population booms.
+        let up = self.orgs.uptake_ch[i];
+        let mut chan_gain = 0i64;
+        for (k, &uk) in up.iter().enumerate() {
+            let u = uk as i64;
+            if u > 0 {
+                let ci = k * cells + fi;
+                let want_c = p.chan_uptake_rate * u / 255;
+                let got = want_c.min(self.chan[ci]).max(0);
+                self.chan[ci] -= got;
+                chan_gain += got * p.chan_uptake_num / p.chan_uptake_den;
+            }
+        }
+        self.orgs.energy[i] += chan_gain;
+
+        // --- chemistry: excrete byproducts of intake into the channels ---
+        let em = self.orgs.emit_ch[i];
+        let intake = got_a + got_b + from_det + chan_gain;
+        for (k, &ek) in em.iter().enumerate() {
+            let e = ek as i64;
+            if e > 0 {
+                let amt = p.chan_emit_base + intake * e / p.chan_emit_den;
+                let ci = k * cells + fi;
+                let v = self.chan[ci] + amt;
+                self.chan[ci] = if v > p.chan_cap { p.chan_cap } else { v };
+            }
+        }
 
         // --- emit signal ---
         let emit = out[brain::OUT_EMIT];
@@ -478,8 +574,27 @@ impl World {
             .hash
             .count_within(&self.orgs, i, sx, sy, p.crowd_radius);
         let crowd_cost = crowd as i64 * p.crowd_cost;
-        self.orgs.energy[i] -=
-            p.basal_upkeep + brain_cost + size_cost + move_cost + habitat_cost + crowd_cost;
+        // chemistry costs: toxicity of non-resisted channels above threshold, plus upkeep for the
+        // uptake and resistance machinery this lineage carries.
+        let rm = self.orgs.resist_mask[i];
+        let mut toxin_cost = 0i64;
+        for k in 0..N_CHAN {
+            let c = self.chan[k * cells + fi];
+            if c > p.chan_toxic_threshold && rm & (1 << k) == 0 {
+                toxin_cost += (c - p.chan_toxic_threshold) * p.chan_toxin_num / p.chan_toxin_den;
+            }
+        }
+        let uptake_upkeep = up.iter().filter(|&&x| x > 0).count() as i64 * p.chan_uptake_upkeep;
+        let resist_upkeep = rm.count_ones() as i64 * p.chan_resist_upkeep;
+        self.orgs.energy[i] -= p.basal_upkeep
+            + brain_cost
+            + size_cost
+            + move_cost
+            + habitat_cost
+            + crowd_cost
+            + toxin_cost
+            + uptake_upkeep
+            + resist_upkeep;
         self.orgs.carnivory[i] *= 0.99;
         self.orgs.age[i] += 1;
 
@@ -616,6 +731,9 @@ impl World {
         for &s in &self.signal {
             h.i64(s);
         }
+        for &c in &self.chan {
+            h.i64(c);
+        }
         for &(bx, by) in &self.blooms {
             h.u32(canonical_bits(bx));
             h.u32(canonical_bits(by));
@@ -646,6 +764,14 @@ impl World {
             h.u8(o.cg[i]);
             h.u8(o.cb[i]);
             h.u32(canonical_bits(o.carnivory[i]));
+            h.u16(o.sense_mask[i]);
+            h.u16(o.resist_mask[i]);
+            for &e in &o.emit_ch[i] {
+                h.u8(e);
+            }
+            for &u in &o.uptake_ch[i] {
+                h.u8(u);
+            }
             let br = &o.brains[i];
             h.u32(br.n_hidden as u32);
             h.u32(br.conns.len() as u32);
@@ -799,6 +925,15 @@ fn hash_gene_kind(h: &mut Fnv, k: GeneKind) {
             h.u8(4);
             h.u16(param);
             h.i16(threshold);
+        }
+        GeneKind::Uptake { channel, eff } => {
+            h.u8(5);
+            h.u8(channel);
+            h.i16(eff);
+        }
+        GeneKind::Resist { channel } => {
+            h.u8(6);
+            h.u8(channel);
         }
     }
 }

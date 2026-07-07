@@ -4,7 +4,7 @@
 //! in its own `Vec<Brain>` column rather than a flat stride). Iteration is index-ordered;
 //! ties break by stable `id`. Slots are reused from a LIFO free-list on death.
 
-use crate::brain::Brain;
+use crate::brain::{Brain, N_CHAN};
 use crate::genome::{develop, Genome};
 use crate::math::Scalar;
 
@@ -31,6 +31,11 @@ pub struct Organisms {
     pub cg: Vec<u8>,
     pub cb: Vec<u8>,
     pub carnivory: Vec<Scalar>,
+    // --- developed chemical roles (M2); see [`crate::genome::Phenotype`] ---
+    pub sense_mask: Vec<u16>,
+    pub resist_mask: Vec<u16>,
+    pub emit_ch: Vec<[u8; N_CHAN]>,
+    pub uptake_ch: Vec<[u8; N_CHAN]>,
     /// Per-organism growing brain.
     pub brains: Vec<Brain>,
     /// Per-organism open genome (the raw `Vec<Gene>`); the `g_*`/`c*` columns above are its
@@ -95,6 +100,10 @@ impl Organisms {
             self.cg[i] = ph.g;
             self.cb[i] = ph.b;
             self.carnivory[i] = 0.0;
+            self.sense_mask[i] = ph.sense_mask;
+            self.resist_mask[i] = ph.resist_mask;
+            self.emit_ch[i] = ph.emit_ch;
+            self.uptake_ch[i] = ph.uptake_ch;
             self.brains[i] = s.brain;
             self.genomes[i] = s.genome;
             i
@@ -118,6 +127,10 @@ impl Organisms {
             self.cg.push(ph.g);
             self.cb.push(ph.b);
             self.carnivory.push(0.0);
+            self.sense_mask.push(ph.sense_mask);
+            self.resist_mask.push(ph.resist_mask);
+            self.emit_ch.push(ph.emit_ch);
+            self.uptake_ch.push(ph.uptake_ch);
             self.brains.push(s.brain);
             self.genomes.push(s.genome);
             self.alive.len() - 1

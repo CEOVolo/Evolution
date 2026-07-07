@@ -11,6 +11,7 @@
 //! counter). Determinism is preserved by accumulating trait contributions in exact `i64`
 //! fixed-point (milli-units) and doing the single float compose+clamp per channel at the end.
 
+use crate::brain::N_CHAN;
 use crate::math::Scalar;
 use crate::rng::{splitmix64, Pcg32};
 
@@ -32,10 +33,10 @@ pub const N_CHANNELS: usize = 8;
 
 /// A gene's payload. The tag discriminant is serialized and hashed, so it is APPEND-ONLY.
 ///
-/// `TraitMod`/`Junk` are the only kinds generated in Milestone 1. `Emit`/`Sense`/`React` are
-/// **reserved** now — parsed, stored, hashed and snapshotted so the wire format is forward
-/// compatible — but [`develop`] ignores them until the chemistry milestone (M2) gives them
-/// meaning.
+/// The chemistry genes (`Emit`/`Uptake`/`Sense`/`Resist`) carry a **chemical channel** in
+/// `0..N_CHAN` — a different namespace from the trait `Channel` above. Their meaning (is a
+/// substance food, poison, or a signal?) is not assigned by us; it emerges from which genes a
+/// lineage carries. Tags are APPEND-ONLY (serialized + hashed).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GeneKind {
     /// Additively modifies one emergent trait `channel` by `amount` (fixed-point milli-units;
@@ -43,12 +44,18 @@ pub enum GeneKind {
     TraitMod { channel: u8, amount: i16 },
     /// Neutral drift material — no phenotype effect. The reservoir duplication draws from.
     Junk { payload: u32 },
-    /// (M2) Excrete `channel` as a metabolic byproduct at `rate`.
+    /// Excrete chemical `channel` as a metabolic byproduct, strength `rate`.
     Emit { channel: u8, rate: i16 },
-    /// (M2) Perceive `channel` at `gain` (adds a brain input).
+    /// Perceive chemical `channel` (feeds brain input slot `IN_CHAN0 + channel`); `gain` reserved.
     Sense { channel: u8, gain: i16 },
-    /// (M2) A reaction/effect keyed by `param` above `threshold`.
+    /// Reserved for later reactions/effects.
     React { param: u16, threshold: i16 },
+    /// Absorb chemical `channel` for energy (lossily), efficiency `eff`. Makes that substance
+    /// *food* for this lineage.
+    Uptake { channel: u8, eff: i16 },
+    /// Resistance to chemical `channel`'s toxicity — the same substance that poisons others is
+    /// harmless to this lineage.
+    Resist { channel: u8 },
 }
 
 /// One gene: a content-hashed identity (the homology marker / NEAT-innovation analog) plus its
@@ -77,6 +84,15 @@ pub struct Phenotype {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+    // --- chemical roles (M2), developed from Emit/Uptake/Sense/Resist genes ---
+    /// Bit `k` set ⇒ senses chemical channel `k` (its slot feeds the brain).
+    pub sense_mask: u16,
+    /// Bit `k` set ⇒ resistant to channel `k`'s toxicity.
+    pub resist_mask: u16,
+    /// Per-channel excretion strength (byproduct coefficient).
+    pub emit_ch: [u8; N_CHAN],
+    /// Per-channel uptake efficiency (channel `k` is food for this lineage when `> 0`).
+    pub uptake_ch: [u8; N_CHAN],
 }
 
 /// Compile a genome into a phenotype. Deterministic: contributions accumulate as exact `i64`
@@ -84,14 +100,44 @@ pub struct Phenotype {
 /// bit-identical across targets); float appears only in one `compose` per channel.
 pub fn develop(g: &Genome) -> Phenotype {
     let mut acc = [0i64; N_CHANNELS];
+    let mut sense_mask = 0u16;
+    let mut resist_mask = 0u16;
+    let mut emit_ch = [0u8; N_CHAN];
+    let mut uptake_ch = [0u8; N_CHAN];
     for gene in &g.genes {
-        if let GeneKind::TraitMod { channel, amount } = gene.kind {
-            let c = channel as usize;
-            if c < N_CHANNELS {
-                acc[c] += amount as i64;
+        match gene.kind {
+            GeneKind::TraitMod { channel, amount } => {
+                let c = channel as usize;
+                if c < N_CHANNELS {
+                    acc[c] += amount as i64;
+                }
             }
+            GeneKind::Emit { channel, rate } => {
+                let k = channel as usize;
+                if k < N_CHAN {
+                    emit_ch[k] = emit_ch[k].saturating_add(clamp_u8_i16(rate));
+                }
+            }
+            GeneKind::Uptake { channel, eff } => {
+                let k = channel as usize;
+                if k < N_CHAN {
+                    uptake_ch[k] = uptake_ch[k].saturating_add(clamp_u8_i16(eff));
+                }
+            }
+            GeneKind::Sense { channel, .. } => {
+                let k = channel as usize;
+                if k < N_CHAN {
+                    sense_mask |= 1 << k;
+                }
+            }
+            GeneKind::Resist { channel } => {
+                let k = channel as usize;
+                if k < N_CHAN {
+                    resist_mask |= 1 << k;
+                }
+            }
+            GeneKind::Junk { .. } | GeneKind::React { .. } => {}
         }
-        // Junk / Emit / Sense / React contribute nothing to the phenotype in M1.
     }
     Phenotype {
         size: compose(1.0, acc[Channel::Size as usize], 0.4, 2.2),
@@ -102,7 +148,17 @@ pub fn develop(g: &Genome) -> Phenotype {
         r: compose_u8(128, acc[Channel::ColorR as usize]),
         g: compose_u8(128, acc[Channel::ColorG as usize]),
         b: compose_u8(128, acc[Channel::ColorB as usize]),
+        sense_mask,
+        resist_mask,
+        emit_ch,
+        uptake_ch,
     }
+}
+
+/// Clamp a signed gene payload to a `u8` strength (negatives → 0).
+#[inline]
+fn clamp_u8_i16(v: i16) -> u8 {
+    v.clamp(0, 255) as u8
 }
 
 /// `base + milli/1000`, clamped. `clamp` is comparison-only (no min/max intrinsic), matching the
@@ -199,28 +255,46 @@ fn push_traitmod(genes: &mut Vec<Gene>, rng: &mut Pcg32, channel: Channel, amoun
     });
 }
 
-/// Jitter a gene's payload in place (`TraitMod`/`Emit`/`Sense`/`React`; `Junk` is inert).
+/// Jitter a gene's numeric payload in place (`Junk`/`Resist` have none, so are inert here).
 fn point_mutate(kind: &mut GeneKind, rng: &mut Pcg32, delta: f32) {
     let d = (rng.next_f32_signed() * delta * 1000.0) as i32;
     match kind {
         GeneKind::TraitMod { amount, .. } => *amount = clamp_i16(*amount as i32 + d),
         GeneKind::Emit { rate, .. } => *rate = clamp_i16(*rate as i32 + d),
+        GeneKind::Uptake { eff, .. } => *eff = clamp_i16(*eff as i32 + d),
         GeneKind::Sense { gain, .. } => *gain = clamp_i16(*gain as i32 + d),
         GeneKind::React { threshold, .. } => *threshold = clamp_i16(*threshold as i32 + d),
-        GeneKind::Junk { .. } => {}
+        GeneKind::Junk { .. } | GeneKind::Resist { .. } => {}
     }
 }
 
+/// A random new gene: mostly a small trait tweak, sometimes a chemistry gene on a random
+/// chemical channel (so emit/uptake/toxin-resistance/perception can appear and be selected).
 fn random_small_gene(rng: &mut Pcg32) -> GeneKind {
-    if rng.chance(0.1) {
-        GeneKind::Junk {
-            payload: rng.next_u32(),
-        }
-    } else {
-        GeneKind::TraitMod {
+    let r = rng.below(100);
+    match r {
+        0..=54 => GeneKind::TraitMod {
             channel: rng.below(N_CHANNELS as u32) as u8,
             amount: (rng.next_f32_signed() * 200.0) as i16,
-        }
+        },
+        55..=64 => GeneKind::Junk {
+            payload: rng.next_u32(),
+        },
+        65..=74 => GeneKind::Emit {
+            channel: rng.below(N_CHAN as u32) as u8,
+            rate: (rng.next_f32_unit() * 180.0) as i16,
+        },
+        75..=84 => GeneKind::Uptake {
+            channel: rng.below(N_CHAN as u32) as u8,
+            eff: (rng.next_f32_unit() * 180.0) as i16,
+        },
+        85..=92 => GeneKind::Sense {
+            channel: rng.below(N_CHAN as u32) as u8,
+            gain: 100,
+        },
+        _ => GeneKind::Resist {
+            channel: rng.below(N_CHAN as u32) as u8,
+        },
     }
 }
 
@@ -247,6 +321,10 @@ pub fn kind_hash(kind: &GeneKind) -> u64 {
         GeneKind::React { param, threshold } => {
             0x05 ^ ((param as u64) << 8) ^ ((threshold as u16 as u64) << 24)
         }
+        GeneKind::Uptake { channel, eff } => {
+            0x06 ^ ((channel as u64) << 8) ^ ((eff as u16 as u64) << 16)
+        }
+        GeneKind::Resist { channel } => 0x07 ^ ((channel as u64) << 8),
     }
 }
 
@@ -335,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_kinds_are_inert_in_develop() {
+    fn chemistry_genes_develop_into_roles() {
         let g = Genome {
             genes: vec![
                 tm(Channel::Size, 500),
@@ -347,19 +425,36 @@ mod tests {
                     id: 2,
                     kind: GeneKind::Emit {
                         channel: 0,
-                        rate: 999,
+                        rate: 200,
                     },
                 },
                 Gene {
                     id: 3,
                     kind: GeneKind::Sense {
                         channel: 1,
-                        gain: 999,
+                        gain: 100,
                     },
+                },
+                Gene {
+                    id: 4,
+                    kind: GeneKind::Uptake {
+                        channel: 0,
+                        eff: 150,
+                    },
+                },
+                Gene {
+                    id: 5,
+                    kind: GeneKind::Resist { channel: 2 },
                 },
             ],
         };
-        // Only the Size TraitMod counts: 500 milli → 1.5.
-        assert!((develop(&g).size - 1.5).abs() < 1e-6);
+        let ph = develop(&g);
+        // Traits unaffected by chemistry genes: Size TraitMod 500 milli → 1.5.
+        assert!((ph.size - 1.5).abs() < 1e-6);
+        // Chemistry genes develop into roles.
+        assert_eq!(ph.emit_ch[0], 200);
+        assert_eq!(ph.uptake_ch[0], 150);
+        assert_eq!(ph.sense_mask, 1 << 1);
+        assert_eq!(ph.resist_mask, 1 << 2);
     }
 }

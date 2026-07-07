@@ -6,6 +6,7 @@
 //! Diagnostic readouts (diversity, fractions, averages) are display-only and never feed back
 //! into the sim.
 
+use sim_core::brain::N_CHAN;
 use sim_core::{presets, Command, CommandKind, DeathCause, Event, ParamId, World, WorldParams};
 use wasm_bindgen::prelude::*;
 
@@ -265,6 +266,10 @@ impl Sim {
                     o.g_habitat[i],
                     o.g_diet[i],
                     o.genomes[i].genes.len() as f32,
+                    o.emit_ch[i].iter().filter(|&&x| x > 0).count() as f32,
+                    o.uptake_ch[i].iter().filter(|&&x| x > 0).count() as f32,
+                    o.resist_mask[i].count_ones() as f32,
+                    o.sense_mask[i].count_ones() as f32,
                 ];
             }
         }
@@ -399,6 +404,40 @@ impl Sim {
         } else {
             s as f32 / n as f32
         }
+    }
+
+    /// Per-channel population role counts, flattened `[emit, uptake, resist, sense]` × N_CHAN.
+    /// Emit+uptake overlapping on a channel = cross-feeding forming; emit+resist = a detox /
+    /// chemical-warfare dynamic. All read off measured genes; the engine labels no substance.
+    pub fn channel_role_counts(&self) -> Vec<u32> {
+        let o = &self.world.orgs;
+        let mut counts = vec![0u32; N_CHAN * 4];
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let (em, up) = (o.emit_ch[i], o.uptake_ch[i]);
+                let (rm, sm) = (o.resist_mask[i], o.sense_mask[i]);
+                for (k, (&e, &u)) in em.iter().zip(up.iter()).enumerate() {
+                    if e > 0 {
+                        counts[k * 4] += 1;
+                    }
+                    if u > 0 {
+                        counts[k * 4 + 1] += 1;
+                    }
+                    if rm & (1 << k) != 0 {
+                        counts[k * 4 + 2] += 1;
+                    }
+                    if sm & (1 << k) != 0 {
+                        counts[k * 4 + 3] += 1;
+                    }
+                }
+            }
+        }
+        counts
+    }
+
+    /// Number of chemical channels (for reshaping [`Self::channel_role_counts`]).
+    pub fn n_chan() -> u32 {
+        N_CHAN as u32
     }
 
     /// Average genome length (number of genes) — the open genome grows/shrinks as lineages
@@ -600,6 +639,10 @@ impl Sim {
             o.g_habitat[i],
             o.g_diet[i],
             o.genomes[i].genes.len() as f32,
+            o.emit_ch[i].iter().filter(|&&x| x > 0).count() as f32,
+            o.uptake_ch[i].iter().filter(|&&x| x > 0).count() as f32,
+            o.resist_mask[i].count_ones() as f32,
+            o.sense_mask[i].count_ones() as f32,
         ]
     }
 

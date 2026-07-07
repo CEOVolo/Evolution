@@ -15,7 +15,15 @@
 use crate::math::{tanh_det, Scalar};
 use crate::rng::Pcg32;
 
-pub const N_IN: usize = 11;
+/// Core sensory inputs present in every brain (bias, food, gradients, energy, neighbour,
+/// daylight, signal, elevation).
+pub const N_CORE: usize = 11;
+/// Generic chemical channels — the substrate for evolvable senses and niche construction (M2).
+pub const N_CHAN: usize = 6;
+/// Total inputs = core senses + one reserved slot per chemical channel. Kept a compile-time
+/// constant so NEAT node indices stay stable; a channel slot only carries information if the
+/// lineage evolves a `Sense` gene (making it non-zero) *and* a brain connection out of it.
+pub const N_IN: usize = N_CORE + N_CHAN;
 pub const N_OUT: usize = 4;
 pub const OUT_BASE: usize = N_IN;
 
@@ -34,6 +42,8 @@ pub const IN_DAYLIGHT: usize = 8;
 pub const IN_SIGNAL: usize = 9;
 /// Local elevation (−1 deep water … +1 high land) — lets avoidance/migration evolve too.
 pub const IN_ELEVATION: usize = 10;
+/// First chemical-channel input slot; channel `k`'s concentration is fed at `IN_CHAN0 + k`.
+pub const IN_CHAN0: usize = N_CORE;
 
 // Output semantics.
 pub const OUT_AX: usize = 0;
@@ -78,7 +88,8 @@ impl Brain {
         for o in 0..N_OUT {
             let n_links = 1 + rng.below(2) as usize; // 1..=2
             for _ in 0..n_links {
-                let from = rng.below(N_IN as u32);
+                // Founders wire only CORE senses; chemical perception must evolve (add-conn).
+                let from = rng.below(N_CORE as u32);
                 b.conns.push(Conn {
                     from,
                     to: (OUT_BASE + o) as u32,
@@ -210,7 +221,9 @@ mod tests {
     fn forward_is_deterministic_and_grows() {
         let mut rng = Pcg32::new(1, 1);
         let mut b = Brain::random_minimal(&mut rng);
-        let inp = [1.0, 0.4, -0.2, 0.1, 0.7, -0.3, 0.2, 0.5, 0.6, -0.1, 0.3];
+        let inp = [
+            1.0, 0.4, -0.2, 0.1, 0.7, -0.3, 0.2, 0.5, 0.6, -0.1, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         let mut s1 = Vec::new();
         let mut s2 = Vec::new();
         let mut ba = b.clone();

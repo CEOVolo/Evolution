@@ -14,11 +14,11 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F39; // "EVO9"
-const VERSION: u16 = 9;
+const MAGIC: u32 = 0x45564F41; // "EVOA" (v10)
+const VERSION: u16 = 10;
 /// Genome/development format version — bumped when the gene schema or `develop()` mapping
 /// changes, independently of the world `VERSION`.
-const GENOME_FORMAT_VERSION: u16 = 1;
+const GENOME_FORMAT_VERSION: u16 = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -59,6 +59,10 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.u32(w.signal.len() as u32);
     for &s in &w.signal {
         o.i64(s);
+    }
+    o.u32(w.chan.len() as u32);
+    for &c in &w.chan {
+        o.i64(c);
     }
     o.u32(w.blooms.len() as u32);
     for &(bx, by) in &w.blooms {
@@ -117,6 +121,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..slen {
         signal.push(r.i64()?);
     }
+    let clen = r.u32()? as usize;
+    let mut chan = Vec::with_capacity(clen);
+    for _ in 0..clen {
+        chan.push(r.i64()?);
+    }
     let blen = r.u32()? as usize;
     let mut blooms = Vec::with_capacity(blen);
     for _ in 0..blen {
@@ -125,8 +134,8 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
-        params, seed, tick_count, field, field_b, terrain, elevation, detritus, signal, blooms,
-        orgs,
+        params, seed, tick_count, field, field_b, terrain, elevation, detritus, signal, chan,
+        blooms, orgs,
     ))
 }
 
@@ -158,6 +167,21 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.i64(p.predation_gain_den);
     o.f32(p.crowd_radius);
     o.i64(p.crowd_cost);
+    o.i64(p.chan_cap);
+    o.i64(p.chan_decay_num);
+    o.i64(p.chan_decay_den);
+    o.i64(p.chan_diffuse_div);
+    o.i64(p.chan_emit_base);
+    o.i64(p.chan_emit_den);
+    o.i64(p.chan_uptake_rate);
+    o.i64(p.chan_uptake_num);
+    o.i64(p.chan_uptake_den);
+    o.i64(p.chan_uptake_upkeep);
+    o.i64(p.chan_toxic_threshold);
+    o.i64(p.chan_toxin_num);
+    o.i64(p.chan_toxin_den);
+    o.i64(p.chan_resist_upkeep);
+    o.i64(p.chan_sense_cap);
     o.i64(p.basal_upkeep);
     o.i64(p.brain_cost);
     o.i64(p.size_upkeep);
@@ -210,6 +234,21 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         predation_gain_den: r.i64()?,
         crowd_radius: r.f32()?,
         crowd_cost: r.i64()?,
+        chan_cap: r.i64()?,
+        chan_decay_num: r.i64()?,
+        chan_decay_den: r.i64()?,
+        chan_diffuse_div: r.i64()?,
+        chan_emit_base: r.i64()?,
+        chan_emit_den: r.i64()?,
+        chan_uptake_rate: r.i64()?,
+        chan_uptake_num: r.i64()?,
+        chan_uptake_den: r.i64()?,
+        chan_uptake_upkeep: r.i64()?,
+        chan_toxic_threshold: r.i64()?,
+        chan_toxin_num: r.i64()?,
+        chan_toxin_den: r.i64()?,
+        chan_resist_upkeep: r.i64()?,
+        chan_sense_cap: r.i64()?,
         basal_upkeep: r.i64()?,
         brain_cost: r.i64()?,
         size_upkeep: r.i64()?,
@@ -317,6 +356,15 @@ fn write_gene_kind(o: &mut Writer, k: GeneKind) {
             o.u16(param);
             o.i16(threshold);
         }
+        GeneKind::Uptake { channel, eff } => {
+            o.u8(5);
+            o.u8(channel);
+            o.i16(eff);
+        }
+        GeneKind::Resist { channel } => {
+            o.u8(6);
+            o.u8(channel);
+        }
     }
 }
 
@@ -351,6 +399,11 @@ fn read_gene_kind(r: &mut Reader) -> Result<GeneKind, SnapshotError> {
             param: r.u16()?,
             threshold: r.i16()?,
         },
+        5 => GeneKind::Uptake {
+            channel: r.u8()?,
+            eff: r.i16()?,
+        },
+        6 => GeneKind::Resist { channel: r.u8()? },
         _ => return Err(SnapshotError::Truncated),
     })
 }
@@ -410,6 +463,10 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.cr.push(ph.r);
         s.cg.push(ph.g);
         s.cb.push(ph.b);
+        s.sense_mask.push(ph.sense_mask);
+        s.resist_mask.push(ph.resist_mask);
+        s.emit_ch.push(ph.emit_ch);
+        s.uptake_ch.push(ph.uptake_ch);
         s.genomes.push(gm);
     }
     let free_len = r.u32()? as usize;
