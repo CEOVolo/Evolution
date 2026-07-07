@@ -419,7 +419,7 @@ async function main() {
 
   function updateLegend() {
     let t;
-    if (colorBy === "diet") t = "клетки: 🟢 еда A · 🟠 еда B · 🔴 хищник";
+    if (colorBy === "diet") t = "клетки: 🟢 еда A · 🟠 еда B · ⚪ всеядные · 🔴 хищник";
     else if (colorBy === "habitat") t = "клетки: 🔵 водные · 🟦 берег · 🟫 сухопутные";
     else if (colorBy === "chem")
       t = `клетки по в-ву ${curSubstance()}: 🔴 выделяет · 🟢 поглощает · 🟡 и то и то · 🟣 устойчив · 🔵 чувствует`;
