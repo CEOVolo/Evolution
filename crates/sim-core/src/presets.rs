@@ -7,7 +7,7 @@
 use crate::params::WorldParams;
 
 /// Number of presets (ids `0..COUNT`).
-pub const COUNT: u32 = 5;
+pub const COUNT: u32 = 7;
 
 pub fn name(id: u32) -> &'static str {
     match id {
@@ -15,6 +15,8 @@ pub fn name(id: u32) -> &'static str {
         2 => "Скудость",
         3 => "Хищный мир",
         4 => "Архипелаг",
+        5 => "Редкое начало",
+        6 => "Пустой холст",
         _ => "Обычный",
     }
 }
@@ -53,6 +55,18 @@ pub fn preset(id: u32) -> WorldParams {
             p.habitat_cost = 180;
             p.initial_population = 500;
             p.initial_energy = 300;
+        }
+        5 => {
+            // Sparse start: a few founders in a lean world — watch life spread across the map
+            // instead of the whole grid filling in at once.
+            p.initial_population = 80;
+            p.field_regrow = 4;
+            p.field_cap = 800;
+        }
+        6 => {
+            // Empty canvas: no life at all. Read the terrain first, then seed it by hand with
+            // the ✱ brush wherever you like — you pick the starting conditions.
+            p.initial_population = 0;
         }
         _ => {}
     }

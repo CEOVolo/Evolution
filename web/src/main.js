@@ -26,7 +26,16 @@ async function main() {
   const $ = (id) => document.getElementById(id);
 
   // --- camera ---
-  const baseScale = canvas.width / worldW;
+  // The canvas is the full-viewport hero; size it to its box and fit the (square) world inside.
+  let baseScale = 1;
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.round(r.width));
+    canvas.height = Math.max(1, Math.round(r.height));
+    baseScale = Math.min(canvas.width, canvas.height) / worldW;
+  }
+  window.addEventListener("resize", resize);
+  resize();
   const cam = { x: worldW / 2, y: worldH / 2, zoom: 1 };
   let followId = null;
 
@@ -81,6 +90,11 @@ async function main() {
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
   $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
+  $("gear").onclick = () => $("settings").classList.toggle("hidden");
+  $("drawer-toggle").onclick = () => {
+    const collapsed = $("drawer").classList.toggle("collapsed");
+    $("drawer-toggle").textContent = collapsed ? "Данные ▸" : "Данные ◂";
+  };
   $("species").addEventListener("click", (e) => {
     const row = e.target.closest("[data-bkt]");
     if (!row) return;
@@ -140,6 +154,7 @@ async function main() {
   );
 
   canvas.addEventListener("mousedown", (e) => {
+    $("settings").classList.add("hidden");
     const [mx, my] = canvasCoords(e);
     dragging = true;
     moved = false;
@@ -326,7 +341,7 @@ async function main() {
     if (!predatorsAnnounced && carn > 0.03 && pop > 50) {
       toast("🦈 Сами собой появились хищники!");
       predatorsAnnounced = true;
-    } else if (pop === 0) toast("💀 Мир вымер — жми «Новый мир» или подсыпь еды");
+    } else if (pop === 0 && lastNarrPop > 0) toast("💀 Мир вымер — жми «Новый мир» или подсыпь еды");
     else if (ratio > 1.35) toast(`🌱 Вспышка размножения (+${(pop - prev).toLocaleString()})`);
     else if (ratio < 0.7) toast(`💀 Массовое вымирание (−${(prev - pop).toLocaleString()})`);
     lastNarr = now;
