@@ -100,6 +100,7 @@ async function main() {
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
   $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
+  $("bloomrate").oninput = (e) => sim.set_bloom_rate(+e.target.value);
   $("gear").onclick = () => $("settings").classList.toggle("hidden");
   $("drawer-toggle").onclick = () => {
     const collapsed = $("drawer").classList.toggle("collapsed");
@@ -147,6 +148,7 @@ async function main() {
     const cx = Math.floor(w.x / cellW);
     const cy = Math.floor(w.y / cellH);
     if (brush === "food") sim.inject(cx, cy, 3, 900);
+    else if (brush === "bloom") sim.bloom(cx, cy);
     else if (brush === "spawn") for (let k = 0; k < 6; k++) sim.spawn(cx, cy, 350);
     else if (brush === "kill") sim.kill(cx - 3, cy - 3, cx + 3, cy + 3);
   }
@@ -591,13 +593,24 @@ async function main() {
       }
     }
 
-    // drifting bloom (food-patch) centres
+    // transient food-burst events — a soft green glow that fades as the event ages out
     const bl = sim.blooms();
-    ctx.strokeStyle = "rgba(255,235,150,0.22)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i < bl.length; i += 2) {
+    for (let i = 0; i < bl.length; i += 4) {
+      const bx = ox + bl[i] * s;
+      const by = oy + bl[i + 1] * s;
+      const br = Math.max(2, bl[i + 2] * s);
+      const frac = bl[i + 3]; // 1 = fresh, →0 dying
+      const grad = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      grad.addColorStop(0, `rgba(130,235,140,${0.10 + 0.26 * frac})`);
+      grad.addColorStop(1, "rgba(130,235,140,0)");
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(ox + bl[i] * s, oy + bl[i + 1] * s, 45 * s, 0, 6.283);
+      ctx.arc(bx, by, br, 0, 6.283);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(180,255,190,${0.14 + 0.3 * frac})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, 6.283);
       ctx.stroke();
     }
 

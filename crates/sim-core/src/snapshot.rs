@@ -12,10 +12,10 @@ use crate::brain::{Brain, Conn};
 use crate::genome::{develop, Gene, GeneKind, Genome};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
-use crate::world::World;
+use crate::world::{Bloom, World};
 
-const MAGIC: u32 = 0x45564F41; // "EVOA" (v10)
-const VERSION: u16 = 10;
+const MAGIC: u32 = 0x45564F41; // "EVOA" (v11)
+const VERSION: u16 = 11;
 /// Genome/development format version — bumped when the gene schema or `develop()` mapping
 /// changes, independently of the world `VERSION`.
 const GENOME_FORMAT_VERSION: u16 = 2;
@@ -65,9 +65,13 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
         o.i64(c);
     }
     o.u32(w.blooms.len() as u32);
-    for &(bx, by) in &w.blooms {
-        o.f32(bx);
-        o.f32(by);
+    for b in &w.blooms {
+        o.f32(b.x);
+        o.f32(b.y);
+        o.f32(b.radius);
+        o.i64(b.boost);
+        o.u32(b.age);
+        o.u32(b.life);
     }
 
     write_orgs(&mut o, &w.orgs);
@@ -129,7 +133,14 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     let blen = r.u32()? as usize;
     let mut blooms = Vec::with_capacity(blen);
     for _ in 0..blen {
-        blooms.push((r.f32()?, r.f32()?));
+        blooms.push(Bloom {
+            x: r.f32()?,
+            y: r.f32()?,
+            radius: r.f32()?,
+            boost: r.i64()?,
+            age: r.u32()?,
+            life: r.u32()?,
+        });
     }
 
     let orgs = read_orgs(&mut r)?;
@@ -147,7 +158,9 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.i64(p.field_cap);
     o.i64(p.field_regrow);
     o.u32(p.day_period);
-    o.u32(p.bloom_count);
+    o.i64(p.bloom_event_rate);
+    o.u32(p.bloom_life);
+    o.f32(p.bloom_radius);
     o.i64(p.bloom_boost);
     o.i64(p.decompose_div);
     o.i64(p.corpse_size_factor);
@@ -214,7 +227,9 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         field_cap: r.i64()?,
         field_regrow: r.i64()?,
         day_period: r.u32()?,
-        bloom_count: r.u32()?,
+        bloom_event_rate: r.i64()?,
+        bloom_life: r.u32()?,
+        bloom_radius: r.f32()?,
         bloom_boost: r.i64()?,
         decompose_div: r.i64()?,
         corpse_size_factor: r.i64()?,

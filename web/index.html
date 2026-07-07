@@ -138,6 +138,7 @@
           <select id="brush" title="Режим мыши: наблюдать или рисовать кистью">
             <option value="observe">👁 Наблюдать</option>
             <option value="food">🌱 Сыпать еду</option>
+            <option value="bloom">☀ Вспышка еды</option>
             <option value="spawn">✱ Подселить</option>
             <option value="kill">☠ Стереть</option>
           </select></div>
@@ -161,6 +162,8 @@
           <input id="eat" type="range" min="5" max="150" value="60" /></div>
         <div class="frow"><label title="Насколько сильно чужая среда (особенно глубокая вода) высасывает энергию — сила барьера">Суровость среды</label>
           <input id="habcost" type="range" min="0" max="300" value="90" /></div>
+        <div class="frow"><label title="Как часто сам собой возникает временный всплеск еды (событие). 0 = никогда — тогда вспышки только по твоему клику кистью «☀ Вспышка еды».">Случайные вспышки</label>
+          <input id="bloomrate" type="range" min="0" max="100" value="0" /></div>
       </div>
 
       <aside id="drawer">
@@ -202,6 +205,7 @@
               <span><span class="sw" style="background:#1a7d2e"></span>зелёная дымка — еда A</span>
               <span><span class="sw" style="background:#c98a2e"></span>янтарная дымка — еда B (другой корм)</span>
               <span><span class="sw" style="background:#2f6fb0"></span>синее — вода (барьер между ареалами)</span>
+              <span><span class="sw" style="background:radial-gradient(circle,#8ce68c,rgba(140,230,140,0))"></span>зелёное свечение — вспышка еды (временное событие)</span>
               <span><span class="sw" style="background:#e0e0e0"></span>точка — живая клетка</span>
               <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — её гены</span>
               <span><span class="sw" style="background:#ff3c3c"></span>красный ободок — сейчас хищничает</span>

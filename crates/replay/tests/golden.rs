@@ -17,18 +17,19 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // + Niche-construction chemistry: generic channels + Emit/Uptake/Resist/Sense genes (EVO10,
-    // N_IN 11→17). Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0xd8d1_66fd_06d6_d446, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0x1004_adbc_21f4_cec4, "seed=1 tick=500");
+    // + Blooms reworked from permanent drifting oases into transient food-burst events, off by
+    // default (bloom_event_rate=0), so the default world starts with no blooms. Regenerated
+    // deliberately.
+    assert_eq!(hash_after(1, 100), 0xbbb2_7f1b_3f82_58d5, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0xe14c_2870_5d42_2108, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x256c_f7a0_850a_717f,
+        0xe121_46ab_898a_6f8b,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x6e84_3ef4_76ca_1002,
+        0xcb0a_cb6a_c6da_484d,
         "seed=2 tick=2000"
     );
 }

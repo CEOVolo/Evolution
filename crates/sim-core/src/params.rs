@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 9;
+pub const PARAMS_SCHEMA_VERSION: u16 = 10;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -25,6 +25,9 @@ pub enum ParamId {
     /// Habitat mismatch cost — how harshly the wrong substrate (esp. water) drains energy,
     /// i.e. how strong a barrier water/low ground is between habitats.
     HabitatCost,
+    /// Chance per tick (in ten-thousandths) that a random transient food-burst event appears.
+    /// `0` (default) = no automatic events; food bursts then only come from the user.
+    BloomEventRate,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -42,9 +45,19 @@ pub struct WorldParams {
     // living-world dynamics
     /// Length of the day/night–season cycle in ticks (food waxes and wanes).
     pub day_period: u32,
-    /// Number of drifting "bloom" centres where regrowth is boosted.
-    pub bloom_count: u32,
-    /// Extra regrowth per tick near a bloom centre.
+    /// Transient food-burst events ("blooms"). Unlike the old permanent drifting oases, each
+    /// event appears, boosts regrowth in a disc for `bloom_life` ticks, then vanishes — leaving
+    /// the food it grew to be eaten down (the "bust"). Events come from two sources: a rare
+    /// random spawn (see `bloom_event_rate`, off by default) and the user's food-burst brush.
+    ///
+    /// Chance per tick, in ten-thousandths, that a random food-burst appears somewhere. `0`
+    /// (default) turns automatic events off entirely — the world then only bursts on demand.
+    pub bloom_event_rate: i64,
+    /// How many ticks a food-burst event lasts before it vanishes.
+    pub bloom_life: u32,
+    /// Radius (world units) of a food-burst event's boosted disc.
+    pub bloom_radius: Scalar,
+    /// Extra regrowth per tick inside an active food-burst event.
     pub bloom_boost: i64,
 
     // death & decomposition
@@ -168,7 +181,9 @@ impl Default for WorldParams {
             field_regrow: 6,
 
             day_period: 1500,
-            bloom_count: 4,
+            bloom_event_rate: 0, // off by default — food bursts are user-triggered events
+            bloom_life: 400,
+            bloom_radius: 45.0,
             bloom_boost: 16,
 
             decompose_div: 40,
@@ -248,6 +263,7 @@ impl WorldParams {
             ParamId::ReproThreshold => self.repro_threshold = raw.max(1),
             ParamId::BiteAmount => self.bite_amount = raw.max(0),
             ParamId::HabitatCost => self.habitat_cost = raw.max(0),
+            ParamId::BloomEventRate => self.bloom_event_rate = raw.clamp(0, 10_000),
         }
     }
 

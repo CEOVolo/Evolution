@@ -1,14 +1,14 @@
 //! The world and its tick — the one hot function the whole engine is built around.
 //!
-//! A **living, pressuring** world: food waxes and wanes on a day/night–season cycle and
-//! concentrates in drifting "bloom" patches; predation is **skill-based** (a predator only
-//! catches prey it is actually pursuing, so prey can evade); and organisms can **emit and
-//! sense a signal** whose meaning evolution assigns. Every organism has a growing recurrent
-//! brain ([`crate::brain`]). Nothing is hard-coded to a role or outcome — foraging, fleeing,
-//! hunting, timing, and signalling all emerge (or don't) under these pressures.
+//! A **living, pressuring** world: food waxes and wanes on a day/night–season cycle and can
+//! surge in transient **food-burst events** (see [`Bloom`]); predation is **skill-based** (a
+//! predator only catches prey it is actually pursuing, so prey can evade); and organisms can
+//! **emit and sense a signal** whose meaning evolution assigns. Every organism has a growing
+//! recurrent brain ([`crate::brain`]). Nothing is hard-coded to a role or outcome — foraging,
+//! fleeing, hunting, timing, and signalling all emerge (or don't) under these pressures.
 //!
-//! Fixed phase order per tick: 1. commands, 2. drift blooms + regrow fields + decay signal,
-//! 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
+//! Fixed phase order per tick: 1. commands, 2. spawn/age food-burst events + regrow fields +
+//! decay signal, 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
 
 use crate::brain::{self, Brain, N_CHAN, OUT_AX, OUT_AY};
 use crate::command::{Command, CommandKind};
@@ -20,8 +20,23 @@ use crate::organism::{NewOrganism, Organisms};
 use crate::params::WorldParams;
 use crate::rng::{splitmix64, subsystem, Pcg32};
 
-const BLOOM_RADIUS_SQ: Scalar = 45.0 * 45.0;
-const BLOOM_DRIFT: Scalar = 1.5;
+/// A transient **food-burst event**: a disc where food regrows faster, for a limited time.
+///
+/// Unlike the old permanent drifting oases, a bloom appears (from a rare random spawn or the
+/// user's brush), boosts regrowth for `life` ticks, then vanishes — the food it grew is left to
+/// be eaten down (the boom, then the bust). It only ever perturbs the *environment*: who
+/// exploits the surge, and how, is left entirely to selection (no scripted "scavenger").
+#[derive(Clone, Debug)]
+pub struct Bloom {
+    pub x: Scalar,
+    pub y: Scalar,
+    pub radius: Scalar,
+    pub boost: i64,
+    /// Ticks elapsed since the event began.
+    pub age: u32,
+    /// Total lifetime in ticks; the event is removed once `age >= life`.
+    pub life: u32,
+}
 
 #[derive(Clone, Debug)]
 pub struct World {
@@ -49,8 +64,8 @@ pub struct World {
     /// Generic chemical channels (M2): `N_CHAN` integer fields flattened as `k*cells + idx`.
     /// Their meaning (food / toxin / signal) is assigned by evolution, not by us.
     pub chan: Vec<i64>,
-    /// Drifting bloom centres where regrowth is boosted.
-    pub blooms: Vec<(Scalar, Scalar)>,
+    /// Active transient food-burst events (usually empty; see [`Bloom`]).
+    pub blooms: Vec<Bloom>,
     pub orgs: Organisms,
     hash: SpatialHash,
 }
@@ -74,15 +89,9 @@ impl World {
         );
         let cells = params.cell_count();
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
-        let mut brng = Pcg32::from_key(seed, subsystem::BLOOM, 0);
-        let blooms = (0..params.bloom_count)
-            .map(|_| {
-                (
-                    brng.next_f32_unit() * params.width,
-                    brng.next_f32_unit() * params.height,
-                )
-            })
-            .collect();
+        // Food-burst events start empty: the world is calm until one is triggered (randomly, if
+        // `bloom_event_rate > 0`, or by the user).
+        let blooms = Vec::new();
         let terrain = make_terrain(seed, &params);
         let elevation = make_elevation(seed, &params);
         let mut w = World {
@@ -133,7 +142,7 @@ impl World {
         detritus: Vec<i64>,
         signal: Vec<i64>,
         chan: Vec<i64>,
-        blooms: Vec<(Scalar, Scalar)>,
+        blooms: Vec<Bloom>,
         orgs: Organisms,
     ) -> Self {
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
@@ -211,29 +220,36 @@ impl World {
             self.apply_command(c, &mut events);
         }
 
-        // Drift the bloom centres (seeded Brownian walk).
+        // Food-burst events: maybe spawn a random one (off unless `bloom_event_rate > 0`), keyed
+        // by the tick alone so it is reproducible and independent of any organism. User-placed
+        // bursts arrived above via the command phase. Both kinds are aged and expired below.
         let (seed, tick_c, w_w, w_h) = (
             self.seed,
             self.tick_count,
             self.params.width,
             self.params.height,
         );
-        for (k, bloom) in self.blooms.iter_mut().enumerate() {
-            let mut r = Pcg32::from_key(
-                seed,
-                subsystem::BLOOM,
-                splitmix64(tick_c) ^ splitmix64(k as u64),
-            );
-            bloom.0 = wrap(bloom.0 + r.next_f32_signed() * BLOOM_DRIFT, w_w);
-            bloom.1 = wrap(bloom.1 + r.next_f32_signed() * BLOOM_DRIFT, w_h);
+        let rate = self.params.bloom_event_rate;
+        if rate > 0 {
+            let mut r = Pcg32::from_key(seed, subsystem::BLOOM, splitmix64(tick_c));
+            if (r.below(10_000) as i64) < rate {
+                let nb = Bloom {
+                    x: r.next_f32_unit() * w_w,
+                    y: r.next_f32_unit() * w_h,
+                    radius: self.params.bloom_radius,
+                    boost: self.params.bloom_boost,
+                    age: 0,
+                    life: self.params.bloom_life.max(1),
+                };
+                self.blooms.push(nb);
+            }
         }
 
-        // Regrow the field: modulated by daylight and boosted near bloom centres.
+        // Regrow the field: modulated by daylight and boosted inside active food-burst events.
         let daylight = self.daylight();
         let day_factor = 0.4 + daylight * 1.2; // [0.4, 1.6]
         let cap = self.params.field_cap;
         let base = self.params.field_regrow;
-        let boost = self.params.bloom_boost;
         let gw = self.params.grid_w as usize;
         let gh = self.params.grid_h as usize;
         let cw = self.params.width / gw as f32;
@@ -248,13 +264,13 @@ impl World {
                 // rich exactly where A is poor. Blooms are lush green patches, so they boost A.
                 let mut rg_a = (base as f32 * day_factor * t * 0.5) as i64;
                 let mut rg_b = (base as f32 * day_factor * (2.05 - t) * 0.5) as i64;
-                for &(bx, by) in &self.blooms {
-                    let dx = ccx - bx;
-                    let dy = ccy - by;
-                    if dx * dx + dy * dy <= BLOOM_RADIUS_SQ {
-                        // a bloom is a lush oasis for both foods — don't privilege A
-                        rg_a += boost;
-                        rg_b += boost;
+                for b in &self.blooms {
+                    let dx = ccx - b.x;
+                    let dy = ccy - b.y;
+                    if dx * dx + dy * dy <= b.radius * b.radius {
+                        // a burst is a lush oasis for both foods — don't privilege A
+                        rg_a += b.boost;
+                        rg_b += b.boost;
                         break;
                     }
                 }
@@ -264,6 +280,13 @@ impl World {
                 self.field_b[idx] = if vb > cap { cap } else { vb };
             }
         }
+
+        // Age food-burst events and drop the expired ones. `retain` keeps insertion order, so
+        // remaining events stay in a canonical, cross-target-deterministic sequence.
+        for b in self.blooms.iter_mut() {
+            b.age += 1;
+        }
+        self.blooms.retain(|b| b.age < b.life);
 
         // Decompose corpses slowly into soil food.
         let ddiv = self.params.decompose_div.max(1);
@@ -678,6 +701,20 @@ impl World {
                     brain,
                 });
             }
+            CommandKind::Bloom { cx, cy } => {
+                let cw = self.params.width / self.params.grid_w as f32;
+                let ch = self.params.height / self.params.grid_h as f32;
+                let x = ((*cx).rem_euclid(self.params.grid_w as i32) as f32 + 0.5) * cw;
+                let y = ((*cy).rem_euclid(self.params.grid_h as i32) as f32 + 0.5) * ch;
+                self.blooms.push(Bloom {
+                    x,
+                    y,
+                    radius: self.params.bloom_radius,
+                    boost: self.params.bloom_boost,
+                    age: 0,
+                    life: self.params.bloom_life.max(1),
+                });
+            }
             CommandKind::Kill { cx0, cy0, cx1, cy1 } => {
                 let (xlo, xhi) = ((*cx0).min(*cx1), (*cx0).max(*cx1));
                 let (ylo, yhi) = ((*cy0).min(*cy1), (*cy0).max(*cy1));
@@ -734,9 +771,13 @@ impl World {
         for &c in &self.chan {
             h.i64(c);
         }
-        for &(bx, by) in &self.blooms {
-            h.u32(canonical_bits(bx));
-            h.u32(canonical_bits(by));
+        for b in &self.blooms {
+            h.u32(canonical_bits(b.x));
+            h.u32(canonical_bits(b.y));
+            h.u32(canonical_bits(b.radius));
+            h.i64(b.boost);
+            h.u32(b.age);
+            h.u32(b.life);
         }
 
         let mut idx: Vec<usize> = (0..self.orgs.capacity())

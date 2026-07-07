@@ -292,12 +292,16 @@ impl Sim {
         vec![a, g, b]
     }
 
-    /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
+    /// Active food-burst events as `[x, y, radius, life_frac, ...]` in world coordinates.
+    /// `life_frac` is remaining lifetime in `[0, 1]` (1 = just spawned) so the UI can fade them.
     pub fn blooms(&self) -> Vec<f32> {
-        let mut v = Vec::with_capacity(self.world.blooms.len() * 2);
-        for &(x, y) in &self.world.blooms {
-            v.push(x);
-            v.push(y);
+        let mut v = Vec::with_capacity(self.world.blooms.len() * 4);
+        for b in &self.world.blooms {
+            v.push(b.x);
+            v.push(b.y);
+            v.push(b.radius);
+            let life = b.life.max(1) as f32;
+            v.push((life - b.age as f32) / life);
         }
         v
     }
@@ -743,6 +747,12 @@ impl Sim {
             .push(Command::local(CommandKind::Kill { cx0, cy0, cx1, cy1 }));
     }
 
+    /// Trigger a transient food-burst event centred on grid cell `(cx, cy)`.
+    pub fn bloom(&mut self, cx: i32, cy: i32) {
+        self.pending
+            .push(Command::local(CommandKind::Bloom { cx, cy }));
+    }
+
     pub fn set_mutation_rate(&mut self, per_ten_thousand: i32) {
         self.set_param(ParamId::MutationRate, per_ten_thousand as i64);
     }
@@ -761,6 +771,11 @@ impl Sim {
 
     pub fn set_habitat_cost(&mut self, raw: i32) {
         self.set_param(ParamId::HabitatCost, raw as i64);
+    }
+
+    /// Chance per tick (in ten-thousandths) of a random food-burst event. `0` = off.
+    pub fn set_bloom_rate(&mut self, per_ten_thousand: i32) {
+        self.set_param(ParamId::BloomEventRate, per_ten_thousand as i64);
     }
 
     pub fn reset(&mut self, seed: u32) {

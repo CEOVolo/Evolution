@@ -11,8 +11,8 @@
 
 use crate::params::ParamId;
 
-/// Bumped whenever the command wire format changes.
-pub const COMMAND_SCHEMA_VERSION: u16 = 1;
+/// Bumped whenever the command wire format changes. v2 added `Bloom` (food-burst events).
+pub const COMMAND_SCHEMA_VERSION: u16 = 2;
 
 /// Identifies who issued a command. Solo play uses `0`.
 pub type ActorId = u32;
@@ -38,6 +38,10 @@ pub enum CommandKind {
     },
     /// Spawn an organism at the centre of grid cell `(cx, cy)` with a default genome.
     Spawn { cx: i32, cy: i32, energy: i64 },
+    /// Start a transient food-burst event centred on grid cell `(cx, cy)`, using the world's
+    /// current `bloom_radius`/`bloom_boost`/`bloom_life`. It boosts regrowth in a disc, then
+    /// vanishes — the environment is perturbed, never any organism's behaviour.
+    Bloom { cx: i32, cy: i32 },
     /// Kill all organisms whose cell falls in the inclusive grid rectangle.
     Kill {
         cx0: i32,
