@@ -9,16 +9,18 @@
 //! Hand-rolled little-endian with a magic + version header; floats stored as raw `to_bits()`.
 
 use crate::brain::{Brain, Conn};
+use crate::develop::develop_body;
 use crate::genome::{develop, Gene, GeneKind, Genome};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
-use crate::world::{Bloom, Bond, World};
+use crate::regnet::RegNet;
+use crate::world::{Bloom, World};
 
-const MAGIC: u32 = 0x45564F41; // "EVOA" (v12)
-const VERSION: u16 = 12;
+const MAGIC: u32 = 0x45564F42; // "EVOB" (v13 — organism bodies)
+const VERSION: u16 = 13;
 /// Genome/development format version — bumped when the gene schema or `develop()` mapping
 /// changes, independently of the world `VERSION`.
-const GENOME_FORMAT_VERSION: u16 = 3;
+const GENOME_FORMAT_VERSION: u16 = 4;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -73,14 +75,6 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
         o.u32(b.age);
         o.u32(b.life);
     }
-    o.u32(w.bonds.len() as u32);
-    for b in &w.bonds {
-        o.u32(b.sa);
-        o.u32(b.ida);
-        o.u32(b.sb);
-        o.u32(b.idb);
-    }
-
     write_orgs(&mut o, &w.orgs);
     o.buf
 }
@@ -149,21 +143,10 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
             life: r.u32()?,
         });
     }
-    let bnlen = r.u32()? as usize;
-    let mut bonds = Vec::with_capacity(bnlen);
-    for _ in 0..bnlen {
-        bonds.push(Bond {
-            sa: r.u32()?,
-            ida: r.u32()?,
-            sb: r.u32()?,
-            idb: r.u32()?,
-        });
-    }
-
-    let orgs = read_orgs(&mut r)?;
+    let orgs = read_orgs(&mut r, seed)?;
     Ok(World::from_parts(
         params, seed, tick_count, field, field_b, terrain, elevation, detritus, signal, chan,
-        blooms, bonds, orgs,
+        blooms, orgs,
     ))
 }
 
@@ -360,6 +343,45 @@ fn read_brain(r: &mut Reader) -> Result<Brain, SnapshotError> {
     })
 }
 
+fn write_regnet(o: &mut Writer, rn: &RegNet) {
+    o.u32(rn.n_hidden as u32);
+    o.u32(rn.conns.len() as u32);
+    for c in &rn.conns {
+        o.u32(c.from);
+        o.u32(c.to);
+        o.f32(c.w);
+        o.bool(c.enabled);
+    }
+    o.u32(rn.bias.len() as u32);
+    for &x in &rn.bias {
+        o.f32(x);
+    }
+}
+
+fn read_regnet(r: &mut Reader) -> Result<RegNet, SnapshotError> {
+    let n_hidden = r.u32()? as u16;
+    let nc = r.u32()? as usize;
+    let mut conns = Vec::with_capacity(nc);
+    for _ in 0..nc {
+        conns.push(Conn {
+            from: r.u32()?,
+            to: r.u32()?,
+            w: r.f32()?,
+            enabled: r.bool()?,
+        });
+    }
+    let nb = r.u32()? as usize;
+    let mut bias = Vec::with_capacity(nb);
+    for _ in 0..nb {
+        bias.push(r.f32()?);
+    }
+    Ok(RegNet {
+        n_hidden,
+        bias,
+        conns,
+    })
+}
+
 fn write_genome(o: &mut Writer, gm: &Genome) {
     o.u32(gm.genes.len() as u32);
     for g in &gm.genes {
@@ -456,14 +478,16 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.f32(s.py[i]);
         o.f32(s.vx[i]);
         o.f32(s.vy[i]);
+        o.f32(s.hx[i]);
+        o.f32(s.hy[i]);
         o.i64(s.energy[i]);
         o.u32(s.age[i]);
         o.u32(s.parent[i]);
         o.u64(s.birth_tick[i]);
-        o.f32(s.carnivory[i]);
         write_brain(o, &s.brains[i]);
-        // The genome is authoritative; the g_*/c* phenotype columns are rebuilt via develop() on
-        // load, so we do NOT serialize them.
+        write_regnet(o, &s.regnets[i]);
+        // Genome + brain + regnet are authoritative; the developed body and g_* traits are rebuilt
+        // via develop()/develop_body() on load, so we do NOT serialize them.
         write_genome(o, &s.genomes[i]);
     }
     o.u32(s.free.len() as u32);
@@ -474,38 +498,41 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
     o.u32(s.count);
 }
 
-fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
+fn read_orgs(r: &mut Reader, seed: u64) -> Result<Organisms, SnapshotError> {
     let cap = r.u32()? as usize;
     let mut s = Organisms::with_capacity(cap);
     for _ in 0..cap {
-        s.alive.push(r.bool()?);
-        s.id.push(r.u32()?);
+        let alive = r.bool()?;
+        let id = r.u32()?;
+        s.alive.push(alive);
+        s.id.push(id);
         s.px.push(r.f32()?);
         s.py.push(r.f32()?);
         s.vx.push(r.f32()?);
         s.vy.push(r.f32()?);
+        s.hx.push(r.f32()?);
+        s.hy.push(r.f32()?);
         s.energy.push(r.i64()?);
         s.age.push(r.u32()?);
         s.parent.push(r.u32()?);
         s.birth_tick.push(r.u64()?);
-        s.carnivory.push(r.f32()?);
-        s.brains.push(read_brain(r)?);
-        // Rebuild the phenotype columns from the stored genome via develop() (pure, deterministic).
+        let brain = read_brain(r)?;
+        let regnet = read_regnet(r)?;
         let gm = read_genome(r)?;
+        // Rebuild developed state from the heritable {genome, regnet}: global traits via develop(),
+        // and the whole body via develop_body() (pure + keyed by this organism's id, so identical).
         let ph = develop(&gm);
-        s.g_size.push(ph.size);
         s.g_metab.push(ph.metabolism);
         s.g_repro.push(ph.repro);
-        s.g_habitat.push(ph.habitat);
-        s.g_diet.push(ph.diet);
-        s.g_adhesion.push(ph.adhesion);
-        s.cr.push(ph.r);
-        s.cg.push(ph.g);
-        s.cb.push(ph.b);
-        s.sense_mask.push(ph.sense_mask);
-        s.resist_mask.push(ph.resist_mask);
-        s.emit_ch.push(ph.emit_ch);
-        s.uptake_ch.push(ph.uptake_ch);
+        let body = if alive {
+            develop_body(&regnet, ph.size, (ph.r, ph.g, ph.b), seed, id)
+        } else {
+            Default::default()
+        };
+        s.mass_milli.push(body.mass_milli());
+        s.bodies.push(body);
+        s.brains.push(brain);
+        s.regnets.push(regnet);
         s.genomes.push(gm);
     }
     let free_len = r.u32()? as usize;

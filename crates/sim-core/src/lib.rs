@@ -27,6 +27,7 @@
 
 pub mod brain;
 pub mod command;
+pub mod develop;
 pub mod environment;
 pub mod event;
 pub mod genome;
@@ -34,6 +35,7 @@ pub mod math;
 pub mod organism;
 pub mod params;
 pub mod presets;
+pub mod regnet;
 pub mod rng;
 pub mod snapshot;
 pub mod world;
