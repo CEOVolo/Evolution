@@ -69,6 +69,8 @@ async function main() {
   let playing = true;
   let speed = 4;
   let brush = "observe";
+  let layer = "nature"; // background map layer
+  let colorBy = "lineage"; // how organisms are coloured
   let predatorsAnnounced = false;
 
   const playBtn = $("play");
@@ -86,6 +88,14 @@ async function main() {
   };
   $("speed").oninput = (e) => (speed = +e.target.value);
   $("brush").onchange = (e) => (brush = e.target.value);
+  $("layer").onchange = (e) => {
+    layer = e.target.value;
+    updateLegend();
+  };
+  $("colorby").onchange = (e) => {
+    colorBy = e.target.value;
+    updateLegend();
+  };
   $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
@@ -113,6 +123,15 @@ async function main() {
     o.value = id;
     o.textContent = Sim.preset_name(id);
     presetSel.appendChild(o);
+  }
+  // add one background-layer option per chemical substance
+  const N_CHAN = Sim.n_chan();
+  const layerSel = $("layer");
+  for (let k = 0; k < N_CHAN; k++) {
+    const o = document.createElement("option");
+    o.value = "chan" + k;
+    o.textContent = "🧪 вещество " + k;
+    layerSel.appendChild(o);
   }
   presetSel.onchange = (e) => {
     const id = +e.target.value;
@@ -387,41 +406,118 @@ async function main() {
     lastNarrPop = pop;
   }
 
+  // --- layers ---
+  const chanHues = [
+    [230, 70, 235],
+    [70, 220, 235],
+    [240, 160, 50],
+    [130, 235, 90],
+    [240, 90, 140],
+    [170, 130, 245],
+  ];
+  const curSubstance = () => (layer.startsWith("chan") ? +layer.slice(4) : 0);
+
+  function updateLegend() {
+    let t;
+    if (colorBy === "diet") t = "клетки: 🟢 еда A · 🟠 еда B · 🔴 хищник";
+    else if (colorBy === "habitat") t = "клетки: 🔵 водные · 🟦 берег · 🟫 сухопутные";
+    else if (colorBy === "chem")
+      t = `клетки по в-ву ${curSubstance()}: 🔴 выделяет · 🟢 поглощает · 🟡 и то и то · 🟣 устойчив · 🔵 чувствует`;
+    else t = "клетки: цвет их генов (род)";
+    $("layerlegend").innerHTML = t;
+  }
+
+  // Fill the offscreen field image according to the selected background layer.
+  function buildField() {
+    const d = fimg.data;
+    const N = gridW * gridH;
+    if (layer.startsWith("chan")) {
+      const ch = sim.channel(curSubstance());
+      const [hr, hg, hb] = chanHues[curSubstance() % chanHues.length];
+      for (let i = 0, j = 0; i < N; i++, j += 4) {
+        const v = ch[i];
+        d[j] = 8 + (hr * v) / 255;
+        d[j + 1] = 10 + (hg * v) / 255;
+        d[j + 2] = 14 + (hb * v) / 255;
+        d[j + 3] = 255;
+      }
+      return;
+    }
+    if (layer === "foodA") {
+      const f = sim.field();
+      for (let i = 0, j = 0; i < N; i++, j += 4) {
+        d[j] = 8;
+        d[j + 1] = 14 + f[i] * 0.9;
+        d[j + 2] = 12;
+        d[j + 3] = 255;
+      }
+      return;
+    }
+    if (layer === "foodB") {
+      const fb = sim.field_b();
+      for (let i = 0, j = 0; i < N; i++, j += 4) {
+        d[j] = 15 + fb[i] * 0.85;
+        d[j + 1] = 12 + fb[i] * 0.5;
+        d[j + 2] = 8;
+        d[j + 3] = 255;
+      }
+      return;
+    }
+    if (layer === "relief") {
+      const el = sim.elevation();
+      const wc = sim.water_level() * 255;
+      for (let i = 0, j = 0; i < N; i++, j += 4) {
+        const e = el[i];
+        if (e < wc) {
+          const depth = (wc - e) / (wc || 1);
+          d[j] = 10;
+          d[j + 1] = 30 + (1 - depth) * 28;
+          d[j + 2] = 70 + depth * 150;
+        } else {
+          const h = (e - wc) / ((255 - wc) || 1);
+          d[j] = 55 + h * 120;
+          d[j + 1] = 65 + h * 105;
+          d[j + 2] = 38 + h * 60;
+        }
+        d[j + 3] = 255;
+      }
+      return;
+    }
+    // "nature": the natural blend
+    const f = sim.field(),
+      fb = sim.field_b(),
+      sg = sim.signal(),
+      dt = sim.detritus(),
+      tr = sim.terrain(),
+      el = sim.elevation();
+    const waterCut = sim.water_level() * 255;
+    for (let i = 0, j = 0; i < N; i++, j += 4) {
+      const v = f[i],
+        b2 = fb[i],
+        sv = sg[i],
+        de = dt[i];
+      if (el[i] < waterCut) {
+        const depth = (waterCut - el[i]) / (waterCut || 1);
+        d[j] = 12 + sv * 0.1 + b2 * 0.16;
+        d[j + 1] = 42 + v * 0.3 + b2 * 0.12 + (1 - depth) * 22 - depth * 12 + de * 0.2;
+        d[j + 2] = 70 + depth * 120 + sv * 0.55;
+      } else {
+        const barren = 255 - tr[i];
+        d[j] = 10 + barren * 0.14 + sv * 0.12 + de * 0.85 + b2 * 0.5;
+        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2 + b2 * 0.32;
+        d[j + 2] = 18 + barren * 0.05 + sv * 0.7;
+      }
+      d[j + 3] = 255;
+    }
+  }
+
   // --- render ---
   const tickEl = $("s-tick");
   const popEl = $("s-pop");
   let frame = 0;
 
   function draw() {
-    // field + signal heatmap at grid resolution
-    const f = sim.field();
-    const fb = sim.field_b();
-    const sg = sim.signal();
-    const dt = sim.detritus();
-    const tr = sim.terrain();
-    const el = sim.elevation();
-    const waterCut = sim.water_level() * 255;
-    const d = fimg.data;
-    for (let i = 0, j = 0; i < f.length; i++, j += 4) {
-      const v = f[i]; // food A (green)
-      const b2 = fb[i]; // food B (amber)
-      const s = sg[i];
-      const de = dt[i];
-      if (el[i] < waterCut) {
-        // underwater: shallows are teal, the deep is dark blue — a barrier you can read at a glance
-        const depth = (waterCut - el[i]) / (waterCut || 1);
-        d[j] = 12 + s * 0.1 + b2 * 0.16;
-        d[j + 1] = 42 + v * 0.3 + b2 * 0.12 + (1 - depth) * 22 - depth * 12 + de * 0.2;
-        d[j + 2] = 70 + depth * 120 + s * 0.55;
-      } else {
-        // dry land: food A reads green, food B reads amber; barren tan, detritus/signal on top
-        const barren = 255 - tr[i];
-        d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85 + b2 * 0.5;
-        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2 + b2 * 0.32;
-        d[j + 2] = 18 + barren * 0.05 + s * 0.7;
-      }
-      d[j + 3] = 255;
-    }
+    buildField();
     fctx.putImageData(fimg, 0, 0);
 
     const W = canvas.width;
@@ -438,9 +534,12 @@ async function main() {
 
     // organisms
     const p = sim.positions();
-    const c = sim.colors();
     const sz = sim.sizes();
     const cn = sim.carnivory();
+    const cCol = colorBy === "lineage" ? sim.colors() : null;
+    const dietsA = colorBy === "diet" ? sim.diets() : null;
+    const habA = colorBy === "habitat" ? sim.habitats() : null;
+    const chemA = colorBy === "chem" ? sim.chem_role_for(curSubstance()) : null;
     const closeUp = cam.zoom > 2.5;
     const vel = closeUp ? sim.velocities() : null;
     for (let i = 0, k = 0, m = 0; i < p.length; i += 2, k += 3, m++) {
@@ -448,12 +547,39 @@ async function main() {
       const y = oy + p[i + 1] * s;
       if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
       const rad = (1.2 + sz[m] * 1.4) * s * 0.8;
-      if (cn[m] > 30) {
+      // red rim = currently hunting (only in the lineage view; other views encode meaning in colour)
+      if (colorBy === "lineage" && cn[m] > 30) {
         ctx.fillStyle = "rgba(255,60,60,0.85)";
         const rr = rad + (closeUp ? 2 : 1.2);
         ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
       }
-      ctx.fillStyle = `rgb(${c[k]},${c[k + 1]},${c[k + 2]})`;
+      let col;
+      if (cCol) col = `rgb(${cCol[k]},${cCol[k + 1]},${cCol[k + 2]})`;
+      else if (dietsA) {
+        if (cn[m] > 30) col = "#ff5a5a";
+        else {
+          const dv = dietsA[m];
+          col = dv < 100 ? "#4bd66b" : dv > 156 ? "#e0a030" : "#8a9a8a";
+        }
+      } else if (habA) {
+        const hv = habA[m];
+        col = hv < 100 ? "#3f7fd0" : hv > 156 ? "#b98a4a" : "#4bb0a0";
+      } else {
+        const rb = chemA[m];
+        col =
+          rb & 1 && rb & 2
+            ? "#f2e14a"
+            : rb & 1
+              ? "#ff5a5a"
+              : rb & 2
+                ? "#4bd66b"
+                : rb & 4
+                  ? "#b070e0"
+                  : rb & 8
+                    ? "#5aa8ff"
+                    : "#39463b";
+      }
+      ctx.fillStyle = col;
       ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
       if (vel) {
         ctx.strokeStyle = "rgba(230,240,255,0.55)";
@@ -545,6 +671,7 @@ async function main() {
     },
   };
 
+  updateLegend();
   toast("👋 Живой мир. Крути колесо, чтобы приблизиться, и кликни клетку — следить за ней.");
   loop();
 }

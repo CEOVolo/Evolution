@@ -166,6 +166,25 @@
       <aside id="drawer">
         <div class="drawer-body">
           <div class="card">
+            <h2>Слои <span class="help" title="Смотри по одному слою, а не всё сразу. Фон — что показать на карте (еда, рельеф, отдельное вещество). Красить — как раскрасить клетки (род, рацион, среда, или роль в показанном веществе).">ⓘ</span></h2>
+            <div class="row"><label>фон карты</label>
+              <select id="layer">
+                <option value="nature">🌿 природа (всё)</option>
+                <option value="foodA">🟢 еда A</option>
+                <option value="foodB">🟠 еда B</option>
+                <option value="relief">⛰ рельеф/вода</option>
+              </select></div>
+            <div class="row"><label>красить клетки</label>
+              <select id="colorby">
+                <option value="lineage">род (гены цвета)</option>
+                <option value="diet">рацион (A/B/хищник)</option>
+                <option value="habitat">среда (вода/суша)</option>
+                <option value="chem">роль в веществе</option>
+              </select></div>
+            <div id="layerlegend" style="margin-top:8px;font-size:12px;color:var(--muted2)">—</div>
+          </div>
+
+          <div class="card">
             <h2>Что я вижу?</h2>
             <div class="explain">
               Каждая <b>точка</b> — живая клетка со своим <b>мозгом-нейросетью</b>: сама решает, куда плыть,

@@ -190,6 +190,78 @@ impl Sim {
         self.world.params.water_level
     }
 
+    /// Chemical channel `k` normalized to `0..=255` (against `chan_cap`), row-major — for the
+    /// per-substance map layer.
+    pub fn channel(&self, k: u32) -> Vec<u8> {
+        let cells = self.world.params.cell_count();
+        let k = k as usize;
+        if k >= N_CHAN {
+            return vec![0u8; cells];
+        }
+        let cap = self.world.params.chan_cap.max(1);
+        let base = k * cells;
+        self.world.chan[base..base + cells]
+            .iter()
+            .map(|&c| ((c.max(0) * 255) / cap).min(255) as u8)
+            .collect()
+    }
+
+    /// Per-live-organism diet gene `0..=255` (0 = food-A specialist, 255 = food-B), in
+    /// `positions()` order — for the "colour by diet" layer.
+    pub fn diets(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push((o.g_diet[i].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        v
+    }
+
+    /// Per-live-organism habitat gene `0..=255` (0 = water, 255 = high land), in `positions()`
+    /// order — for the "colour by habitat" layer.
+    pub fn habitats(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.population() as usize);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                v.push((o.g_habitat[i].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        v
+    }
+
+    /// Per-live-organism role bitmask for channel `k` (bit0 emit, bit1 uptake, bit2 resist,
+    /// bit3 sense), in `positions()` order — for the "colour by chemical role" layer, so producers
+    /// and consumers of a substance are visible in place.
+    pub fn chem_role_for(&self, k: u32) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let k = k as usize;
+        let mut v = Vec::with_capacity(self.world.population() as usize);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let mut b = 0u8;
+                if k < N_CHAN {
+                    if o.emit_ch[i][k] > 0 {
+                        b |= 1;
+                    }
+                    if o.uptake_ch[i][k] > 0 {
+                        b |= 2;
+                    }
+                    if o.resist_mask[i] & (1 << k) != 0 {
+                        b |= 4;
+                    }
+                    if o.sense_mask[i] & (1 << k) != 0 {
+                        b |= 8;
+                    }
+                }
+                v.push(b);
+            }
+        }
+        v
+    }
+
     /// Food field B normalized to `0..=255` (the second, "amber" resource), row-major.
     pub fn field_b(&self) -> Vec<u8> {
         let cap = self.world.params.field_cap.max(1);
