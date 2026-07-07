@@ -13,8 +13,8 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F37; // "EVO7"
-const VERSION: u16 = 7;
+const MAGIC: u32 = 0x45564F38; // "EVO8"
+const VERSION: u16 = 8;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -33,6 +33,10 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
 
     o.u32(w.field.len() as u32);
     for &c in &w.field {
+        o.i64(c);
+    }
+    o.u32(w.field_b.len() as u32);
+    for &c in &w.field_b {
         o.i64(c);
     }
     o.u32(w.terrain.len() as u32);
@@ -79,6 +83,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..flen {
         field.push(r.i64()?);
     }
+    let fblen = r.u32()? as usize;
+    let mut field_b = Vec::with_capacity(fblen);
+    for _ in 0..fblen {
+        field_b.push(r.i64()?);
+    }
     let tlen = r.u32()? as usize;
     let mut terrain = Vec::with_capacity(tlen);
     for _ in 0..tlen {
@@ -107,7 +116,8 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
-        params, seed, tick_count, field, terrain, elevation, detritus, signal, blooms, orgs,
+        params, seed, tick_count, field, field_b, terrain, elevation, detritus, signal, blooms,
+        orgs,
     ))
 }
 
@@ -134,8 +144,11 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.f32(p.contact_radius);
     o.f32(p.predation_size_ratio);
     o.i64(p.bite_amount);
+    o.i64(p.innate_bite);
     o.i64(p.predation_gain_num);
     o.i64(p.predation_gain_den);
+    o.f32(p.crowd_radius);
+    o.i64(p.crowd_cost);
     o.i64(p.basal_upkeep);
     o.i64(p.brain_cost);
     o.i64(p.size_upkeep);
@@ -180,8 +193,11 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         contact_radius: r.f32()?,
         predation_size_ratio: r.f32()?,
         bite_amount: r.i64()?,
+        innate_bite: r.i64()?,
         predation_gain_num: r.i64()?,
         predation_gain_den: r.i64()?,
+        crowd_radius: r.f32()?,
+        crowd_cost: r.i64()?,
         basal_upkeep: r.i64()?,
         brain_cost: r.i64()?,
         size_upkeep: r.i64()?,
@@ -270,6 +286,7 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.f32(s.g_metab[i]);
         o.f32(s.g_repro[i]);
         o.f32(s.g_habitat[i]);
+        o.f32(s.g_diet[i]);
         o.u8(s.cr[i]);
         o.u8(s.cg[i]);
         o.u8(s.cb[i]);
@@ -302,6 +319,7 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.g_metab.push(r.f32()?);
         s.g_repro.push(r.f32()?);
         s.g_habitat.push(r.f32()?);
+        s.g_diet.push(r.f32()?);
         s.cr.push(r.u8()?);
         s.cg.push(r.u8()?);
         s.cb.push(r.u8()?);

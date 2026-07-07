@@ -192,15 +192,17 @@ async function main() {
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, tag) {
-    const diet = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, tag) {
+    const pred = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
+    const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
     return `
       <div class="row" style="margin:0 0 8px">
         <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
         <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
       </div>
-      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${diet}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${pred}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>питание (ген)</span><b>${food} ${diet.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>среда (ген)</span><b>${env} ${habitat.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>энергия</span><b>${energy | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
@@ -218,8 +220,8 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, "");
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, "");
   }
 
   // --- population chart + trait bars ---
@@ -272,16 +274,20 @@ async function main() {
     $("deaths").innerHTML = `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
     const hh = sim.habitat_hist();
     $("habitat").innerHTML = `🌊 ${hh[0].toLocaleString()} · 🏖 ${hh[1].toLocaleString()} · ⛰ ${hh[2].toLocaleString()}`;
+    const dh = sim.diet_hist();
+    $("diet").innerHTML = `🟢 ${dh[0].toLocaleString()} · 🍽 ${dh[1].toLocaleString()} · 🟠 ${dh[2].toLocaleString()}`;
   }
   let selectedSpecies = null;
   function speciesDetail(s) {
     const env = s.hab < 0.4 ? "🌊 водные" : s.hab > 0.6 ? "⛰ сухопутные" : "🏖 береговые";
     const carnPct = Math.round(s.carn * 100);
     const diet = s.carn > 0.12 ? "🔴 хищники" : "🌿 травоядные";
+    const food = s.diet < 0.35 ? "🟢 еда A" : s.diet > 0.65 ? "🟠 еда B" : "🍽 всеядные";
     return `<div class="detail">
       <div>в среднем <b>${env}</b> · ген «среда» ${s.hab.toFixed(2)}</div>
       <div>где живут: 🌊 <b>${s.water.toLocaleString()}</b> · 🏖 <b>${s.shore.toLocaleString()}</b> · ⛰ <b>${s.land.toLocaleString()}</b></div>
       <div>рацион: <b>${diet}</b> · хищность ${carnPct}%</div>
+      <div>питание: <b>${food}</b> (ген ${s.diet.toFixed(2)})</div>
       <div>размер <b>${s.size.toFixed(2)}</b> · мозг 🧠<b>${s.brain}</b> · энергия ~<b>${(+s.energy).toLocaleString()}</b> · всего <b>${s.count.toLocaleString()}</b></div>
     </div>`;
   }
@@ -356,6 +362,7 @@ async function main() {
   function draw() {
     // field + signal heatmap at grid resolution
     const f = sim.field();
+    const fb = sim.field_b();
     const sg = sim.signal();
     const dt = sim.detritus();
     const tr = sim.terrain();
@@ -363,20 +370,21 @@ async function main() {
     const waterCut = sim.water_level() * 255;
     const d = fimg.data;
     for (let i = 0, j = 0; i < f.length; i++, j += 4) {
-      const v = f[i];
+      const v = f[i]; // food A (green)
+      const b2 = fb[i]; // food B (amber)
       const s = sg[i];
       const de = dt[i];
       if (el[i] < waterCut) {
         // underwater: shallows are teal, the deep is dark blue — a barrier you can read at a glance
         const depth = (waterCut - el[i]) / (waterCut || 1);
-        d[j] = 12 + s * 0.1;
-        d[j + 1] = 42 + v * 0.3 + (1 - depth) * 22 - depth * 12 + de * 0.2;
+        d[j] = 12 + s * 0.1 + b2 * 0.16;
+        d[j + 1] = 42 + v * 0.3 + b2 * 0.12 + (1 - depth) * 22 - depth * 12 + de * 0.2;
         d[j + 2] = 70 + depth * 120 + s * 0.55;
       } else {
-        // dry land: barren reads tan, fertile darker green; food/detritus/signal blend on top
+        // dry land: food A reads green, food B reads amber; barren tan, detritus/signal on top
         const barren = 255 - tr[i];
-        d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85;
-        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2;
+        d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85 + b2 * 0.5;
+        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2 + b2 * 0.32;
         d[j + 2] = 18 + barren * 0.05 + s * 0.7;
       }
       d[j + 3] = 255;
@@ -459,11 +467,11 @@ async function main() {
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat] = info;
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet] = info;
     cam.x = px;
     cam.y = py;
     inspectBody.innerHTML = cellCard(
-      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat,
+      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }

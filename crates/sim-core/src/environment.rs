@@ -48,6 +48,44 @@ impl SpatialHash {
         }
     }
 
+    /// Count live organisms within `radius` of `(px, py)`, excluding `self_slot`. Used for the
+    /// density-dependent crowding penalty. Deterministic (a count is order-independent). `radius`
+    /// must be `<= cell` so the 3×3 scan is complete.
+    pub fn count_within(
+        &self,
+        orgs: &Organisms,
+        self_slot: usize,
+        px: Scalar,
+        py: Scalar,
+        radius: Scalar,
+    ) -> u32 {
+        let (cx, cy) = self.cell_of(px, py);
+        let r2 = radius * radius;
+        let mut n = 0u32;
+        for gy in (cy - 1)..=(cy + 1) {
+            if gy < 0 || gy >= self.rows {
+                continue;
+            }
+            for gx in (cx - 1)..=(cx + 1) {
+                if gx < 0 || gx >= self.cols {
+                    continue;
+                }
+                for &j in &self.buckets[(gy * self.cols + gx) as usize] {
+                    let j = j as usize;
+                    if j == self_slot {
+                        continue;
+                    }
+                    let dx = px - orgs.px[j];
+                    let dy = py - orgs.py[j];
+                    if dx * dx + dy * dy <= r2 {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
     /// Nearest live organism to `(px, py)` other than `self_slot`, within `radius`.
     /// Ties break by lower entity id (stable, order-independent).
     pub fn nearest(

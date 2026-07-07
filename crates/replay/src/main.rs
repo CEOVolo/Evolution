@@ -65,9 +65,15 @@ fn main() {
         }
     }
     println!(
-        "final seed={seed} ticks={ticks} pop={} brain={:.1} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} births={births} deaths={deaths} hash={:016x}",
         w.population(),
         avg_complexity(&w),
+        carn_frac(&w) * 100.0,
+        diversity(&w),
+        avg_diet(&w),
+        diet_split(&w).0,
+        diet_split(&w).1,
+        diet_split(&w).2,
         w.state_hash()
     );
 }
@@ -143,6 +149,44 @@ fn avg_complexity(w: &World) -> f32 {
     } else {
         s as f32 / n as f32
     }
+}
+
+/// Mean digestion gene (0 = all food-A specialists, 1 = all food-B). ~0.5 with a wide spread
+/// means both niches are occupied; near 0 or 1 means one food won.
+fn avg_diet(w: &World) -> f32 {
+    let o = &w.orgs;
+    let (mut s, mut n) = (0.0f32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            s += o.g_diet[i];
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        s / n as f32
+    }
+}
+
+/// Diet niche split: (food-A specialists `d<0.35`, generalists, food-B specialists `d>0.65`).
+/// Two full buckets = the population found two dietary niches instead of one blur.
+fn diet_split(w: &World) -> (u32, u32, u32) {
+    let o = &w.orgs;
+    let (mut a, mut g, mut b) = (0u32, 0u32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            let d = o.g_diet[i];
+            if d < 0.35 {
+                a += 1;
+            } else if d > 0.65 {
+                b += 1;
+            } else {
+                g += 1;
+            }
+        }
+    }
+    (a, g, b)
 }
 
 fn carn_frac(w: &World) -> f32 {

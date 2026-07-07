@@ -27,7 +27,12 @@ pub struct World {
     pub params: WorldParams,
     pub seed: u64,
     pub tick_count: u64,
+    /// Food field A (the "green" resource). Regrows where terrain is fertile.
     pub field: Vec<i64>,
+    /// Food field B (the "amber" resource), anti-correlated with A: rich where A is poor. Two
+    /// non-fungible foods, each digested by a different `diet` gene, so the population splits
+    /// into dietary niches instead of one monoculture on a single resource.
+    pub field_b: Vec<i64>,
     /// Static terrain fertility per cell (~0.15..1.9): a landscape of rich and barren places
     /// that permanently scales local regrowth, so different regions become different habitats.
     pub terrain: Vec<Scalar>,
@@ -71,6 +76,7 @@ impl World {
         let elevation = make_elevation(seed, &params);
         let mut w = World {
             field: vec![params.field_cap; cells],
+            field_b: vec![params.field_cap; cells],
             terrain,
             elevation,
             detritus: vec![0; cells],
@@ -91,6 +97,7 @@ impl World {
                 metabolism: 0.6 + rng.next_f32_unit() * 0.8,
                 repro: 0.6 + rng.next_f32_unit() * 0.8,
                 habitat: rng.next_f32_unit(),
+                diet: rng.next_f32_unit(),
                 r: rng.below(256) as u8,
                 g: rng.below(256) as u8,
                 b: rng.below(256) as u8,
@@ -117,6 +124,7 @@ impl World {
         seed: u64,
         tick_count: u64,
         field: Vec<i64>,
+        field_b: Vec<i64>,
         terrain: Vec<Scalar>,
         elevation: Vec<Scalar>,
         detritus: Vec<i64>,
@@ -130,6 +138,7 @@ impl World {
             seed,
             tick_count,
             field,
+            field_b,
             terrain,
             elevation,
             detritus,
@@ -172,11 +181,12 @@ impl World {
         (y * gw + x) as usize
     }
 
-    /// Total edible value at a cell: living food plus scavengeable corpses.
+    /// Effective edible value at a cell for an organism with digestion efficiencies `(ea, eb)`
+    /// on the two food fields, plus scavengeable detritus (diet-neutral).
     #[inline]
-    fn food_at(&self, cx: i32, cy: i32) -> i64 {
+    fn eff_food_at(&self, cx: i32, cy: i32, ea: Scalar, eb: Scalar) -> Scalar {
         let i = self.fidx(cx, cy);
-        self.field[i] + self.detritus[i]
+        self.field[i] as f32 * ea + self.field_b[i] as f32 * eb + self.detritus[i] as f32
     }
 
     /// A dead organism leaves body mass (scaled by size) in the detritus field.
@@ -228,17 +238,23 @@ impl World {
             for cxi in 0..gw {
                 let ccx = (cxi as f32 + 0.5) * cw;
                 let idx = cyi * gw + cxi;
-                let mut rg = (base as f32 * day_factor * self.terrain[idx]) as i64;
+                let t = self.terrain[idx];
+                // Two foods, half the budget each and anti-correlated: A follows fertility, B is
+                // rich exactly where A is poor. Blooms are lush green patches, so they boost A.
+                let mut rg_a = (base as f32 * day_factor * t * 0.5) as i64;
+                let rg_b = (base as f32 * day_factor * (2.05 - t) * 0.5) as i64;
                 for &(bx, by) in &self.blooms {
                     let dx = ccx - bx;
                     let dy = ccy - by;
                     if dx * dx + dy * dy <= BLOOM_RADIUS_SQ {
-                        rg += boost;
+                        rg_a += boost;
                         break;
                     }
                 }
-                let v = self.field[idx] + rg;
+                let v = self.field[idx] + rg_a;
                 self.field[idx] = if v > cap { cap } else { v };
+                let vb = self.field_b[idx] + rg_b;
+                self.field_b[idx] = if vb > cap { cap } else { vb };
             }
         }
 
@@ -327,14 +343,19 @@ impl World {
         let sy = self.orgs.py[i];
         let size = self.orgs.g_size[i];
 
-        // --- sense ---
+        // --- sense (food is what THIS organism can actually digest, per its diet gene) ---
+        // Convex trade-off (squared): a specialist eats its food at full rate while a generalist
+        // is only ~¼ on each, so specialising strictly beats hedging — two diets, not one mush.
+        let diet = self.orgs.g_diet[i];
+        let a = 1.0 - diet;
+        let (ea, eb) = (a * a, diet * diet);
         let (cx, cy) = self.cell_of(sx, sy);
         let here = self.fidx(cx, cy);
-        let food = self.food_at(cx, cy) as f32 / cap;
-        let east = self.food_at(cx + 1, cy) as f32;
-        let west = self.food_at(cx - 1, cy) as f32;
-        let north = self.food_at(cx, cy - 1) as f32;
-        let south = self.food_at(cx, cy + 1) as f32;
+        let food = self.eff_food_at(cx, cy, ea, eb) / cap;
+        let east = self.eff_food_at(cx + 1, cy, ea, eb);
+        let west = self.eff_food_at(cx - 1, cy, ea, eb);
+        let north = self.eff_food_at(cx, cy - 1, ea, eb);
+        let south = self.eff_food_at(cx, cy + 1, ea, eb);
         let grad_x = (east - west) / cap;
         let grad_y = (south - north) / cap;
         let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
@@ -377,17 +398,19 @@ impl World {
         self.orgs.px[i] = wrap(sx + vx, p.width);
         self.orgs.py[i] = wrap(sy + vy, p.height);
 
-        // --- eat from the field ---
+        // --- eat both foods, each scaled by digestion efficiency (the diet trade-off) ---
         let (ncx, ncy) = self.cell_of(self.orgs.px[i], self.orgs.py[i]);
         let fi = self.fidx(ncx, ncy);
         let want = ((p.eat_rate as f32) * self.orgs.g_metab[i]) as i64;
-        let from_field = want.min(self.field[fi]).max(0);
-        self.field[fi] -= from_field;
-        // Scavenging corpses is slower than grazing, so carcasses linger (and are visible).
-        let scav = ((want - from_field) / 2).max(0);
+        let got_a = ((want as f32 * ea) as i64).min(self.field[fi]).max(0);
+        self.field[fi] -= got_a;
+        let got_b = ((want as f32 * eb) as i64).min(self.field_b[fi]).max(0);
+        self.field_b[fi] -= got_b;
+        // Scavenging corpses is slower than grazing (so carcasses linger) and diet-neutral.
+        let scav = ((want - got_a - got_b) / 2).max(0);
         let from_det = scav.min(self.detritus[fi]);
         self.detritus[fi] -= from_det;
-        self.orgs.energy[i] += from_field + from_det;
+        self.orgs.energy[i] += got_a + got_b + from_det;
 
         // --- emit signal ---
         let emit = out[brain::OUT_EMIT];
@@ -396,20 +419,26 @@ impl World {
             self.signal[fi] = if v > p.signal_cap { p.signal_cap } else { v };
         }
 
-        // --- predation: catch a smaller neighbour you are actually pursuing ---
+        // --- predation: bite a smaller neighbour in contact. A full bite when actually pursuing;
+        // a small innate nibble on incidental contact (so a proto-predator can bootstrap). ---
         if let Some(j) = nn {
             if self.orgs.alive[j] && size >= self.orgs.g_size[j] * p.predation_size_ratio {
                 let dxp = self.orgs.px[j] - self.orgs.px[i];
                 let dyp = self.orgs.py[j] - self.orgs.py[i];
-                let toward = dxp * vx + dyp * vy; // moving toward the prey?
-                if toward > 0.0 && dxp * dxp + dyp * dyp <= p.contact_radius * p.contact_radius {
+                if dxp * dxp + dyp * dyp <= p.contact_radius * p.contact_radius {
+                    let pursuing = dxp * vx + dyp * vy > 0.0; // moving toward the prey?
+                    let (bite, carn_gain) = if pursuing {
+                        (p.bite_amount, 0.3)
+                    } else {
+                        (p.innate_bite, 0.05)
+                    };
                     let victim = self.orgs.energy[j];
-                    if victim > 0 {
-                        let steal = p.bite_amount.min(victim);
+                    if victim > 0 && bite > 0 {
+                        let steal = bite.min(victim);
                         self.orgs.energy[j] -= steal;
                         let gain = steal * p.predation_gain_num / p.predation_gain_den;
                         self.orgs.energy[i] += gain;
-                        self.orgs.carnivory[i] = (self.orgs.carnivory[i] + 0.3).min(1.0);
+                        self.orgs.carnivory[i] = (self.orgs.carnivory[i] + carn_gain).min(1.0);
                         if self.orgs.energy[j] <= 0 {
                             let vsize = self.orgs.g_size[j];
                             let (jcx, jcy) = self.cell_of(self.orgs.px[j], self.orgs.py[j]);
@@ -441,7 +470,14 @@ impl World {
         // — a barrier — and matching a place beats generalising, so water/land split into niches.
         let mism = self.elevation[fi] - self.orgs.g_habitat[i];
         let habitat_cost = ((p.habitat_cost as f32) * mism * mism) as i64;
-        self.orgs.energy[i] -= p.basal_upkeep + brain_cost + size_cost + move_cost + habitat_cost;
+        // density-dependent competition: crowding drains energy, so a niche fills to a carrying
+        // capacity instead of the whole grid packing to a uniform carpet.
+        let crowd = self
+            .hash
+            .count_within(&self.orgs, i, sx, sy, p.crowd_radius);
+        let crowd_cost = crowd as i64 * p.crowd_cost;
+        self.orgs.energy[i] -=
+            p.basal_upkeep + brain_cost + size_cost + move_cost + habitat_cost + crowd_cost;
         self.orgs.carnivory[i] *= 0.99;
         self.orgs.age[i] += 1;
 
@@ -516,6 +552,7 @@ impl World {
                     metabolism: 0.6 + rng.next_f32_unit() * 0.8,
                     repro: 0.6 + rng.next_f32_unit() * 0.8,
                     habitat: rng.next_f32_unit(),
+                    diet: rng.next_f32_unit(),
                     r: rng.below(256) as u8,
                     g: rng.below(256) as u8,
                     b: rng.below(256) as u8,
@@ -571,6 +608,9 @@ impl World {
         for &c in &self.field {
             h.i64(c);
         }
+        for &c in &self.field_b {
+            h.i64(c);
+        }
         for &t in &self.terrain {
             h.u32(canonical_bits(t));
         }
@@ -608,6 +648,7 @@ impl World {
             h.u32(canonical_bits(o.g_metab[i]));
             h.u32(canonical_bits(o.g_repro[i]));
             h.u32(canonical_bits(o.g_habitat[i]));
+            h.u32(canonical_bits(o.g_diet[i]));
             h.u8(o.cr[i]);
             h.u8(o.cg[i]);
             h.u8(o.cb[i]);
@@ -745,6 +786,9 @@ fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
     }
     if rng.chance(rate) {
         g.habitat = (g.habitat + rng.next_f32_signed() * d).clamp(0.0, 1.0);
+    }
+    if rng.chance(rate) {
+        g.diet = (g.diet + rng.next_f32_signed() * d).clamp(0.0, 1.0);
     }
     if rng.chance(rate) {
         g.r = mut_u8(g.r, rng);

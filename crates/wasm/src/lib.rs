@@ -189,6 +189,36 @@ impl Sim {
         self.world.params.water_level
     }
 
+    /// Food field B normalized to `0..=255` (the second, "amber" resource), row-major.
+    pub fn field_b(&self) -> Vec<u8> {
+        let cap = self.world.params.field_cap.max(1);
+        self.world
+            .field_b
+            .iter()
+            .map(|&c| ((c.max(0) * 255) / cap) as u8)
+            .collect()
+    }
+
+    /// Population split by evolved diet: `[food-A specialists, generalists, food-B specialists]`
+    /// (diet < 0.35, 0.35..=0.65, > 0.65). Two full buckets = two dietary niches.
+    pub fn diet_hist(&self) -> Vec<u32> {
+        let o = &self.world.orgs;
+        let (mut a, mut g, mut b) = (0u32, 0u32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let d = o.g_diet[i];
+                if d < 0.35 {
+                    a += 1;
+                } else if d > 0.65 {
+                    b += 1;
+                } else {
+                    g += 1;
+                }
+            }
+        }
+        vec![a, g, b]
+    }
+
     /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn blooms(&self) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.world.blooms.len() * 2);
@@ -233,6 +263,7 @@ impl Sim {
                     o.carnivory[i],
                     o.brains[i].complexity() as f32,
                     o.g_habitat[i],
+                    o.g_diet[i],
                 ];
             }
         }
@@ -387,6 +418,7 @@ impl Sim {
         let mut carn = [0f32; 8];
         let mut brain = [0f32; 8];
         let mut hab = [0f32; 8];
+        let mut dt = [0f32; 8];
         let mut ener = [0f64; 8];
         let mut wsl = [[0u32; 3]; 8]; // water / shore / land tally per colour group
         for i in 0..o.capacity() {
@@ -400,6 +432,7 @@ impl Sim {
                 brain[bkt] += o.brains[i].complexity() as f32;
                 let h = o.g_habitat[i];
                 hab[bkt] += h;
+                dt[bkt] += o.g_diet[i];
                 ener[bkt] += o.energy[i] as f64;
                 let k = if h < 0.4 {
                     0
@@ -423,9 +456,9 @@ impl Sim {
             let g = if b & 2 != 0 { 210 } else { 45 };
             let bl = if b & 1 != 0 { 210 } else { 45 };
             out.push_str(&format!(
-                "{{\"bkt\":{},\"name\":\"{}\",\"count\":{},\"size\":{:.2},\"carn\":{:.2},\"brain\":{:.1},\"hab\":{:.2},\"energy\":{:.0},\"water\":{},\"shore\":{},\"land\":{},\"r\":{},\"g\":{},\"b\":{}}}",
+                "{{\"bkt\":{},\"name\":\"{}\",\"count\":{},\"size\":{:.2},\"carn\":{:.2},\"brain\":{:.1},\"hab\":{:.2},\"diet\":{:.2},\"energy\":{:.0},\"water\":{},\"shore\":{},\"land\":{},\"r\":{},\"g\":{},\"b\":{}}}",
                 b, NAMES[b], count[b], size[b] / n, carn[b] / n, brain[b] / n,
-                hab[b] / n, ener[b] / n as f64, wsl[b][0], wsl[b][1], wsl[b][2], r, g, bl
+                hab[b] / n, dt[b] / n, ener[b] / n as f64, wsl[b][0], wsl[b][1], wsl[b][2], r, g, bl
             ));
         }
         out.push(']');
@@ -546,6 +579,7 @@ impl Sim {
             o.carnivory[i],
             o.brains[i].complexity() as f32,
             o.g_habitat[i],
+            o.g_diet[i],
         ]
     }
 

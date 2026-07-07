@@ -16,6 +16,10 @@ pub struct Genome {
     /// Preferred elevation in `0..=1` (0 = deep water, 1 = high land). With the local terrain
     /// this decides where the organism thrives vs. suffers — the seed of water/land niches.
     pub habitat: Scalar,
+    /// Digestion specialization in `0..=1`: efficiency on food A is `1-diet`, on food B is
+    /// `diet`. A strict trade-off (specialists beat the generalist on their own food), so two
+    /// non-fungible foods split the population into dietary niches instead of one monoculture.
+    pub diet: Scalar,
     pub r: u8,
     pub g: u8,
     pub b: u8,
@@ -28,6 +32,7 @@ impl Genome {
             metabolism: 1.0,
             repro: 1.0,
             habitat: 0.5,
+            diet: 0.5,
             r: 120,
             g: 200,
             b: 120,
@@ -52,6 +57,8 @@ pub struct Organisms {
     pub g_repro: Vec<Scalar>,
     /// Preferred elevation (habitat) per organism; see [`Genome::habitat`].
     pub g_habitat: Vec<Scalar>,
+    /// Digestion specialization per organism; see [`Genome::diet`].
+    pub g_diet: Vec<Scalar>,
     pub cr: Vec<u8>,
     pub cg: Vec<u8>,
     pub cb: Vec<u8>,
@@ -108,6 +115,7 @@ impl Organisms {
             self.g_metab[i] = s.genome.metabolism;
             self.g_repro[i] = s.genome.repro;
             self.g_habitat[i] = s.genome.habitat;
+            self.g_diet[i] = s.genome.diet;
             self.cr[i] = s.genome.r;
             self.cg[i] = s.genome.g;
             self.cb[i] = s.genome.b;
@@ -129,6 +137,7 @@ impl Organisms {
             self.g_metab.push(s.genome.metabolism);
             self.g_repro.push(s.genome.repro);
             self.g_habitat.push(s.genome.habitat);
+            self.g_diet.push(s.genome.diet);
             self.cr.push(s.genome.r);
             self.cg.push(s.genome.g);
             self.cb.push(s.genome.b);
@@ -155,6 +164,7 @@ impl Organisms {
             metabolism: self.g_metab[i],
             repro: self.g_repro[i],
             habitat: self.g_habitat[i],
+            diet: self.g_diet[i],
             r: self.cr[i],
             g: self.cg[i],
             b: self.cb[i],

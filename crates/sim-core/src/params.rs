@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 6;
+pub const PARAMS_SCHEMA_VERSION: u16 = 7;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -76,8 +76,17 @@ pub struct WorldParams {
     pub contact_radius: Scalar,
     pub predation_size_ratio: Scalar,
     pub bite_amount: i64,
+    /// Energy nibbled on incidental contact (no pursuit) — lets a proto-predator survive on
+    /// random contacts and *then* evolve to hunt, instead of hunting having to appear at once.
+    pub innate_bite: i64,
     pub predation_gain_num: i64,
     pub predation_gain_den: i64,
+
+    // density-dependent competition (keeps the world from packing to a uniform carpet)
+    /// Radius over which local crowding is counted (must be `<= sense_radius`).
+    pub crowd_radius: Scalar,
+    /// Energy drained per tick per neighbour inside `crowd_radius`.
+    pub crowd_cost: i64,
 
     // metabolism
     pub basal_upkeep: i64,
@@ -140,8 +149,12 @@ impl Default for WorldParams {
             contact_radius: 5.0,
             predation_size_ratio: 1.15,
             bite_amount: 60,
+            innate_bite: 12,
             predation_gain_num: 3,
             predation_gain_den: 4,
+
+            crowd_radius: 10.0,
+            crowd_cost: 2,
 
             basal_upkeep: 1,
             brain_cost: 1,
