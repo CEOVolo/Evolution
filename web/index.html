@@ -18,13 +18,19 @@
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-      #app { display: flex; gap: 18px; padding: 18px; align-items: flex-start; flex-wrap: wrap; }
-      .stage { position: relative; }
-      canvas#c { background: #050705; border: 1px solid var(--line); border-radius: 8px;
-        display: block; cursor: crosshair; image-rendering: pixelated; }
+      #app { max-width: 1360px; margin: 0 auto; padding: 16px; display: flex;
+        flex-direction: column; gap: 16px; }
+      .topbar { display: flex; align-items: baseline; justify-content: space-between;
+        gap: 8px 20px; flex-wrap: wrap; }
+      .stage { position: relative; align-self: center; width: min(94vw, 82vh, 820px); }
+      canvas#c { width: 100%; height: auto; aspect-ratio: 1 / 1; background: #050705;
+        border: 1px solid var(--line); border-radius: 8px; display: block;
+        cursor: crosshair; image-rendering: pixelated; }
       .hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted2);
         font-size: 12px; pointer-events: none; text-shadow: 0 1px 3px #000; }
-      #panel { width: 300px; display: flex; flex-direction: column; gap: 12px; }
+      /* panels tile as a masonry-ish table below the world instead of one tall column */
+      #panel { columns: 300px; column-gap: 14px; }
+      #panel > .card { break-inside: avoid; margin: 0 0 14px; }
       h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
       h1 span { color: var(--accent); font-weight: 500; }
       .sub { color: var(--muted2); font-size: 12px; margin: 3px 0 0; }
@@ -76,17 +82,19 @@
   </head>
   <body>
     <div id="app">
-      <div class="stage">
-        <canvas id="c" width="640" height="640"></canvas>
-        <div class="hint" id="hint">колесо — зум · тащи — панорама · клик по клетке — следить · 2×клик — сброс вида</div>
-      </div>
-
-      <div id="panel">
+      <div class="topbar">
         <div>
           <h1>Эволюция <span>· прототип</span></h1>
           <p class="sub">Живой мир крутится у тебя в браузере на детерминированном ядре.</p>
         </div>
+      </div>
 
+      <div class="stage">
+        <canvas id="c" width="720" height="720"></canvas>
+        <div class="hint" id="hint">колесо — зум · тащи — панорама · клик по клетке — следить · 2×клик — сброс вида</div>
+      </div>
+
+      <div id="panel">
         <div class="card">
           <h2>Что я вижу?</h2>
           <div class="explain">

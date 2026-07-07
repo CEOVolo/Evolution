@@ -261,14 +261,12 @@ async function main() {
   let selectedSpecies = null;
   function speciesDetail(s) {
     const env = s.hab < 0.4 ? "🌊 водные" : s.hab > 0.6 ? "⛰ сухопутные" : "🏖 береговые";
-    const diet =
-      s.carn > 0.12
-        ? `🔴 охотятся (${Math.round(s.carn * 100)}%)`
-        : `🌿 в основном травоядные (${Math.round(s.carn * 100)}%)`;
+    const carnPct = Math.round(s.carn * 100);
+    const diet = s.carn > 0.12 ? "🔴 хищники" : "🌿 травоядные";
     return `<div class="detail">
       <div>в среднем <b>${env}</b> · ген «среда» ${s.hab.toFixed(2)}</div>
       <div>где живут: 🌊 <b>${s.water.toLocaleString()}</b> · 🏖 <b>${s.shore.toLocaleString()}</b> · ⛰ <b>${s.land.toLocaleString()}</b></div>
-      <div>рацион: <b>${diet}</b></div>
+      <div>рацион: <b>${diet}</b> · хищность ${carnPct}%</div>
       <div>размер <b>${s.size.toFixed(2)}</b> · мозг 🧠<b>${s.brain}</b> · энергия ~<b>${(+s.energy).toLocaleString()}</b> · всего <b>${s.count.toLocaleString()}</b></div>
     </div>`;
   }
