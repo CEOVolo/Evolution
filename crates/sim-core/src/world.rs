@@ -22,7 +22,7 @@ use crate::regnet::RegNet;
 use crate::rng::{splitmix64, subsystem, Pcg32};
 
 /// World units between adjacent body-lattice cells (sets how big a developed body is on screen).
-const SPACING: Scalar = 2.5;
+pub const SPACING: Scalar = 2.5;
 /// Feeding: a cell always harvests a base fraction, feeder cells much more (`role_feed` scales it).
 const FEED_BASE: f32 = 0.30;
 const FEED_GAIN: f32 = 0.80;
