@@ -12,13 +12,13 @@ use crate::brain::{Brain, Conn};
 use crate::genome::{develop, Gene, GeneKind, Genome};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
-use crate::world::{Bloom, World};
+use crate::world::{Bloom, Bond, World};
 
-const MAGIC: u32 = 0x45564F41; // "EVOA" (v11)
-const VERSION: u16 = 11;
+const MAGIC: u32 = 0x45564F41; // "EVOA" (v12)
+const VERSION: u16 = 12;
 /// Genome/development format version — bumped when the gene schema or `develop()` mapping
 /// changes, independently of the world `VERSION`.
-const GENOME_FORMAT_VERSION: u16 = 2;
+const GENOME_FORMAT_VERSION: u16 = 3;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -72,6 +72,13 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
         o.i64(b.boost);
         o.u32(b.age);
         o.u32(b.life);
+    }
+    o.u32(w.bonds.len() as u32);
+    for b in &w.bonds {
+        o.u32(b.sa);
+        o.u32(b.ida);
+        o.u32(b.sb);
+        o.u32(b.idb);
     }
 
     write_orgs(&mut o, &w.orgs);
@@ -142,11 +149,21 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
             life: r.u32()?,
         });
     }
+    let bnlen = r.u32()? as usize;
+    let mut bonds = Vec::with_capacity(bnlen);
+    for _ in 0..bnlen {
+        bonds.push(Bond {
+            sa: r.u32()?,
+            ida: r.u32()?,
+            sb: r.u32()?,
+            idb: r.u32()?,
+        });
+    }
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
         params, seed, tick_count, field, field_b, terrain, elevation, detritus, signal, chan,
-        blooms, orgs,
+        blooms, bonds, orgs,
     ))
 }
 
@@ -195,6 +212,9 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.i64(p.chan_toxin_den);
     o.i64(p.chan_resist_upkeep);
     o.i64(p.chan_sense_cap);
+    o.f32(p.bond_stiffness);
+    o.f32(p.bond_rest);
+    o.f32(p.bond_break_factor);
     o.i64(p.basal_upkeep);
     o.i64(p.brain_cost);
     o.i64(p.size_upkeep);
@@ -264,6 +284,9 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         chan_toxin_den: r.i64()?,
         chan_resist_upkeep: r.i64()?,
         chan_sense_cap: r.i64()?,
+        bond_stiffness: r.f32()?,
+        bond_rest: r.f32()?,
+        bond_break_factor: r.f32()?,
         basal_upkeep: r.i64()?,
         brain_cost: r.i64()?,
         size_upkeep: r.i64()?,
@@ -475,6 +498,7 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.g_repro.push(ph.repro);
         s.g_habitat.push(ph.habitat);
         s.g_diet.push(ph.diet);
+        s.g_adhesion.push(ph.adhesion);
         s.cr.push(ph.r);
         s.cg.push(ph.g);
         s.cb.push(ph.b);

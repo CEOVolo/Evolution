@@ -17,19 +17,19 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // + Blooms reworked from permanent drifting oases into transient food-burst events, off by
-    // default (bloom_event_rate=0), so the default world starts with no blooms. Regenerated
-    // deliberately.
-    assert_eq!(hash_after(1, 100), 0xbbb2_7f1b_3f82_58d5, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0xe14c_2870_5d42_2108, "seed=1 tick=500");
+    // + M3 emergent bodies: an `adhesion` trait channel (founder standing variation), cell↔cell
+    // bonds via incomplete division, bond spring physics, and gape-limited predation on bonded
+    // lumps. N_CHANNELS 8→9 and the founder adhesion draw shift the RNG. Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0x907f_aa9b_e98e_8ff0, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x8754_5615_71bd_b7fe, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0xe121_46ab_898a_6f8b,
+        0x64a5_26a7_8564_7a33,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0xcb0a_cb6a_c6da_484d,
+        0x3edd_a204_affb_395d,
         "seed=2 tick=2000"
     );
 }

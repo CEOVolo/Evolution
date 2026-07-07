@@ -164,6 +164,8 @@
           <input id="habcost" type="range" min="0" max="300" value="90" /></div>
         <div class="frow"><label title="Как часто сам собой возникает временный всплеск еды (событие). 0 = никогда — тогда вспышки только по твоему клику кистью «☀ Вспышка еды».">Случайные вспышки</label>
           <input id="bloomrate" type="range" min="0" max="100" value="0" /></div>
+        <div class="frow"><label title="Сила слипания клеток в тела (M3). Склонность слипаться — наследуемый ген, а это общая физика: выше = тела держатся крепче. Тела не получают никаких бонусов — они выживают только через физику (укрытие от хищника размером всего «комка») против платы за скученность.">Слипание (тела)</label>
+          <input id="bondstiff" type="range" min="0" max="600" value="150" /></div>
       </div>
 
       <aside id="drawer">
@@ -206,6 +208,7 @@
               <span><span class="sw" style="background:#c98a2e"></span>янтарная дымка — еда B (другой корм)</span>
               <span><span class="sw" style="background:#2f6fb0"></span>синее — вода (барьер между ареалами)</span>
               <span><span class="sw" style="background:radial-gradient(circle,#8ce68c,rgba(140,230,140,0))"></span>зелёное свечение — вспышка еды (временное событие)</span>
+              <span><span class="sw" style="background:#78ffe1"></span>бирюзовые нити — связи в теле (слипшиеся клетки)</span>
               <span><span class="sw" style="background:#e0e0e0"></span>точка — живая клетка</span>
               <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — её гены</span>
               <span><span class="sw" style="background:#ff3c3c"></span>красный ободок — сейчас хищничает</span>

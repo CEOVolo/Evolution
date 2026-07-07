@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 10;
+pub const PARAMS_SCHEMA_VERSION: u16 = 11;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -28,6 +28,9 @@ pub enum ParamId {
     /// Chance per tick (in ten-thousandths) that a random transient food-burst event appears.
     /// `0` (default) = no automatic events; food bursts then only come from the user.
     BloomEventRate,
+    /// Bond spring stiffness ×1000 (M3): global cohesion of bonded cells. Higher = tighter bodies.
+    /// A knob for exploring whether bodies pay off; the *tendency* to bond stays a heritable trait.
+    BondStiffness,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -134,6 +137,16 @@ pub struct WorldParams {
     /// Normalization divisor for a sensed channel fed to the brain.
     pub chan_sense_cap: i64,
 
+    // bodies (M3) — bonds are springs holding bonded cells near contact; a "body" is a connected
+    // cluster of them. The tendency to form bonds is the heritable `adhesion` trait; these are the
+    // shared physics constants (no cluster ever gets a bonus — bodies pay for themselves here).
+    /// Spring stiffness of a bond (Hooke's constant). Higher = tighter, more rigid bodies.
+    pub bond_stiffness: Scalar,
+    /// Rest length of a bond, scaled by the two cells' average size — where the spring is relaxed.
+    pub bond_rest: Scalar,
+    /// A bond snaps when stretched beyond `bond_rest * bond_break_factor` (a body tears apart).
+    pub bond_break_factor: Scalar,
+
     // metabolism
     pub basal_upkeep: i64,
     pub brain_cost: i64,
@@ -226,6 +239,10 @@ impl Default for WorldParams {
             chan_resist_upkeep: 2,
             chan_sense_cap: 1000,
 
+            bond_stiffness: 0.15,
+            bond_rest: 4.0,
+            bond_break_factor: 2.5,
+
             basal_upkeep: 1,
             brain_cost: 1,
             size_upkeep: 2,
@@ -264,6 +281,7 @@ impl WorldParams {
             ParamId::BiteAmount => self.bite_amount = raw.max(0),
             ParamId::HabitatCost => self.habitat_cost = raw.max(0),
             ParamId::BloomEventRate => self.bloom_event_rate = raw.clamp(0, 10_000),
+            ParamId::BondStiffness => self.bond_stiffness = (raw.max(0) as f32) / 1000.0,
         }
     }
 

@@ -306,6 +306,74 @@ impl Sim {
         v
     }
 
+    /// Active bonds as endpoint pairs `[ax, ay, bx, by, ...]` in world coordinates — the links
+    /// that make bodies visible. Bonds are pruned to valid endpoints each tick, so all are live.
+    pub fn bonds(&self) -> Vec<f32> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.world.bonds.len() * 4);
+        for b in &self.world.bonds {
+            let (a, c) = (b.sa as usize, b.sb as usize);
+            v.push(o.px[a]);
+            v.push(o.py[a]);
+            v.push(o.px[c]);
+            v.push(o.py[c]);
+        }
+        v
+    }
+
+    /// Number of active bonds (edges in the body graph).
+    pub fn bond_count(&self) -> u32 {
+        self.world.bonds.len() as u32
+    }
+
+    /// Average `adhesion` trait over living cells (0 = nobody sticks) — the driver of bodies.
+    pub fn avg_adhesion(&self) -> f32 {
+        let o = &self.world.orgs;
+        let (mut s, mut n) = (0.0f32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                s += o.g_adhesion[i];
+                n += 1;
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            s / n as f32
+        }
+    }
+
+    /// Size of the largest body (biggest connected cluster of bonded cells); `1` = no bodies.
+    pub fn max_body(&self) -> u32 {
+        let cap = self.world.orgs.capacity();
+        let mut parent: Vec<u32> = (0..cap as u32).collect();
+        fn find(parent: &mut [u32], mut x: u32) -> u32 {
+            while parent[x as usize] != x {
+                parent[x as usize] = parent[parent[x as usize] as usize];
+                x = parent[x as usize];
+            }
+            x
+        }
+        for b in &self.world.bonds {
+            let (a, c) = (find(&mut parent, b.sa), find(&mut parent, b.sb));
+            if a != c {
+                parent[a as usize] = c;
+            }
+        }
+        let mut size = vec![0u32; cap];
+        let mut best = 0u32;
+        for i in 0..cap {
+            if self.world.orgs.alive[i] {
+                let r = find(&mut parent, i as u32) as usize;
+                size[r] += 1;
+                if size[r] > best {
+                    best = size[r];
+                }
+            }
+        }
+        best
+    }
+
     /// Live organism velocities `[vx0, vy0, ...]`, matching `positions` order (heading lines).
     pub fn velocities(&self) -> Vec<f32> {
         let o = &self.world.orgs;
@@ -346,10 +414,22 @@ impl Sim {
                     o.uptake_ch[i].iter().filter(|&&x| x > 0).count() as f32,
                     o.resist_mask[i].count_ones() as f32,
                     o.sense_mask[i].count_ones() as f32,
+                    o.g_adhesion[i],
+                    self.bond_degree(i) as f32,
                 ];
             }
         }
         Vec::new()
+    }
+
+    /// How many bonds currently touch the cell in slot `i` (its degree in the body graph).
+    fn bond_degree(&self, i: usize) -> u32 {
+        let id = self.world.orgs.id[i];
+        self.world
+            .bonds
+            .iter()
+            .filter(|b| (b.sa as usize == i && b.ida == id) || (b.sb as usize == i && b.idb == id))
+            .count() as u32
     }
 
     /// `[size, metabolism, repro, carnivory]` averages (display only).
@@ -719,6 +799,8 @@ impl Sim {
             o.uptake_ch[i].iter().filter(|&&x| x > 0).count() as f32,
             o.resist_mask[i].count_ones() as f32,
             o.sense_mask[i].count_ones() as f32,
+            o.g_adhesion[i],
+            self.bond_degree(i) as f32,
         ]
     }
 
@@ -776,6 +858,11 @@ impl Sim {
     /// Chance per tick (in ten-thousandths) of a random food-burst event. `0` = off.
     pub fn set_bloom_rate(&mut self, per_ten_thousand: i32) {
         self.set_param(ParamId::BloomEventRate, per_ten_thousand as i64);
+    }
+
+    /// Bond spring stiffness ×1000 (M3) — global body cohesion. `0` = bonds exert no force.
+    pub fn set_bond_stiffness(&mut self, per_thousand: i32) {
+        self.set_param(ParamId::BondStiffness, per_thousand as i64);
     }
 
     pub fn reset(&mut self, seed: u32) {

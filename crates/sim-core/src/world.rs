@@ -38,6 +38,28 @@ pub struct Bloom {
     pub life: u32,
 }
 
+/// A physical **bond** between two cells (M3) — the substrate for emergent bodies.
+///
+/// A bond is a spring that holds two cells near contact. Bonds form only by *incomplete
+/// division* (a newborn staying attached to its parent, with probability = the parent's evolved
+/// `adhesion`), and a "body" is nothing more than a connected cluster of bonded cells — an
+/// interpretation we place on the graph, never a type in the code. Cells store no shared state
+/// and get **no special treatment**: a bonded cell eats, is eaten, pays upkeep, and is crowded
+/// exactly like a lone cell. The only effect of a bond is the spring force below, so bodies must
+/// pay for themselves through pure physics (and against the crowding cost of clumping) or not
+/// appear at all.
+///
+/// Endpoints are stored as `(slot, id)` pairs. Slots are never moved and are reused only after a
+/// death gives the slot a fresh id, so a stale endpoint is detected by an id mismatch and the
+/// bond is dropped — no bond ever silently re-targets a recycled slot.
+#[derive(Clone, Copy, Debug)]
+pub struct Bond {
+    pub sa: u32,
+    pub ida: u32,
+    pub sb: u32,
+    pub idb: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct World {
     pub params: WorldParams,
@@ -66,12 +88,17 @@ pub struct World {
     pub chan: Vec<i64>,
     /// Active transient food-burst events (usually empty; see [`Bloom`]).
     pub blooms: Vec<Bloom>,
+    /// Physical bonds between cells (M3); a body is a connected cluster of these. See [`Bond`].
+    pub bonds: Vec<Bond>,
     pub orgs: Organisms,
     hash: SpatialHash,
 }
 
 struct PendingBirth {
     parent_id: u32,
+    /// Parent's storage slot at reproduction time; used to bond the newborn to it (validated by
+    /// `parent_id` at birth, since the parent may have died before the birth is applied).
+    parent_slot: usize,
     parent_genome: Genome,
     parent_brain: Brain,
     px: Scalar,
@@ -103,6 +130,7 @@ impl World {
             signal: vec![0; cells],
             chan: vec![0; N_CHAN * cells],
             blooms,
+            bonds: Vec::new(),
             orgs: Organisms::with_capacity(params.initial_population as usize),
             hash,
             params,
@@ -143,6 +171,7 @@ impl World {
         signal: Vec<i64>,
         chan: Vec<i64>,
         blooms: Vec<Bloom>,
+        bonds: Vec<Bond>,
         orgs: Organisms,
     ) -> Self {
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
@@ -158,6 +187,7 @@ impl World {
             signal,
             chan,
             blooms,
+            bonds,
             orgs,
             hash,
         }
@@ -347,6 +377,57 @@ impl World {
 
         self.hash.rebuild(&self.orgs);
 
+        // --- M3: bond springs (bodies) --- Pull each pair of bonded cells toward contact, and
+        // drop bonds whose endpoint died/recycled (id mismatch) or stretched past breaking. Bonds
+        // are visited in canonical order, so the non-associative float force sums are bit-identical
+        // across targets. Run before the act loop, so each spring impulse folds into the normal
+        // velocity update and speed clamp (no runaway). A body earns its keep purely here — there
+        // is no cluster bonus anywhere else in the tick.
+        let k = self.params.bond_stiffness;
+        let restf = self.params.bond_rest;
+        let breakf = self.params.bond_break_factor;
+        // Body shield: mass of each cell's directly-bonded neighbours (rebuilt every tick from the
+        // hashed state, so it is derived — never serialized or hashed). Predation reads it so a
+        // bonded cell is gape-limited by the lump it is part of: to eat it you must out-size the
+        // whole local body, not just the one cell. A lone cell has shield 0 → predation unchanged.
+        let cap_now = self.orgs.capacity();
+        let mut body_shield = vec![0.0f32; cap_now];
+        let mut kept_bonds: Vec<Bond> = Vec::with_capacity(self.bonds.len());
+        for &b in &self.bonds {
+            let (sa, sb) = (b.sa as usize, b.sb as usize);
+            if !(self.orgs.alive[sa]
+                && self.orgs.id[sa] == b.ida
+                && self.orgs.alive[sb]
+                && self.orgs.id[sb] == b.idb)
+            {
+                continue; // an endpoint died (or its slot was recycled) — the bond is gone
+            }
+            let dx = self.orgs.px[sb] - self.orgs.px[sa];
+            let dy = self.orgs.py[sb] - self.orgs.py[sa];
+            let dist2 = dx * dx + dy * dy;
+            let rest = restf * 0.5 * (self.orgs.g_size[sa] + self.orgs.g_size[sb]);
+            let brk = rest * breakf;
+            if dist2 > brk * brk {
+                continue; // stretched past breaking — the body tears here
+            }
+            kept_bonds.push(b);
+            body_shield[sa] += self.orgs.g_size[sb];
+            body_shield[sb] += self.orgs.g_size[sa];
+            if dist2 > 1e-6 {
+                let dist = dist2.sqrt();
+                let f = k * (dist - rest); // Hooke's law: >0 pulls together, <0 pushes apart
+                let (ux, uy) = (dx / dist, dy / dist);
+                // equal and opposite, each divided by cell size (its mass): a big cell budges less
+                let ia = f / self.orgs.g_size[sa];
+                let ib = f / self.orgs.g_size[sb];
+                self.orgs.vx[sa] += ux * ia;
+                self.orgs.vy[sa] += uy * ia;
+                self.orgs.vx[sb] -= ux * ib;
+                self.orgs.vy[sb] -= uy * ib;
+            }
+        }
+        self.bonds = kept_bonds;
+
         let tick = self.tick_count;
         let mut births: Vec<PendingBirth> = Vec::new();
         let mut scratch: Vec<Scalar> = Vec::new();
@@ -355,7 +436,15 @@ impl World {
             if !self.orgs.alive[i] {
                 continue;
             }
-            self.step_organism(i, tick, daylight, &mut scratch, &mut births, &mut events);
+            self.step_organism(
+                i,
+                tick,
+                daylight,
+                &body_shield,
+                &mut scratch,
+                &mut births,
+                &mut events,
+            );
         }
 
         for (seq, b) in births.into_iter().enumerate() {
@@ -381,7 +470,7 @@ impl World {
             let dy = brng.next_f32_signed() * self.params.spawn_radius;
             let px = wrap(b.px + dx, self.params.width);
             let py = wrap(b.py + dy, self.params.height);
-            let (_, id) = self.orgs.insert(NewOrganism {
+            let (child_slot, id) = self.orgs.insert(NewOrganism {
                 px,
                 py,
                 vx: 0.0,
@@ -392,6 +481,22 @@ impl World {
                 genome,
                 brain,
             });
+            // M3: incomplete division. If the parent is still the same living cell, it keeps the
+            // newborn bonded with probability = its evolved `adhesion` (the roll is on its own
+            // keyed stream, so it never perturbs genome/brain evolution). The id check also rules
+            // out a self-bond when the child reused the parent's just-freed slot.
+            if self.orgs.alive[b.parent_slot] && self.orgs.id[b.parent_slot] == b.parent_id {
+                let adh = self.orgs.g_adhesion[b.parent_slot];
+                let mut arng = Pcg32::from_key(self.seed, subsystem::ADHESION, key);
+                if (arng.below(1000) as i64) < (adh * 1000.0) as i64 {
+                    self.bonds.push(Bond {
+                        sa: b.parent_slot as u32,
+                        ida: b.parent_id,
+                        sb: child_slot as u32,
+                        idb: id,
+                    });
+                }
+            }
             events.events.push(Event::Birth {
                 id,
                 parent: b.parent_id,
@@ -403,11 +508,13 @@ impl World {
         events
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn step_organism(
         &mut self,
         i: usize,
         tick: u64,
         daylight: f32,
+        body_shield: &[Scalar],
         scratch: &mut Vec<Scalar>,
         births: &mut Vec<PendingBirth>,
         events: &mut EventBatch,
@@ -543,7 +650,10 @@ impl World {
         // --- predation: bite a smaller neighbour in contact. A full bite when actually pursuing;
         // a small innate nibble on incidental contact (so a proto-predator can bootstrap). ---
         if let Some(j) = nn {
-            if self.orgs.alive[j] && size >= self.orgs.g_size[j] * p.predation_size_ratio {
+            // Gape limit: eating a bonded prey means out-sizing the whole lump it is part of
+            // (its own size plus the mass of its bonded neighbours). Lone prey: shield 0.
+            let prey_size = self.orgs.g_size[j] + body_shield[j];
+            if self.orgs.alive[j] && size >= prey_size * p.predation_size_ratio {
                 let dxp = self.orgs.px[j] - self.orgs.px[i];
                 let dyp = self.orgs.py[j] - self.orgs.py[i];
                 if dxp * dxp + dyp * dyp <= p.contact_radius * p.contact_radius {
@@ -650,6 +760,7 @@ impl World {
             self.orgs.energy[i] -= p.repro_cost + p.offspring_energy;
             births.push(PendingBirth {
                 parent_id: self.orgs.id[i],
+                parent_slot: i,
                 parent_genome: self.orgs.genome_at(i),
                 parent_brain: self.orgs.brains[i].clone(),
                 px: self.orgs.px[i],
@@ -778,6 +889,13 @@ impl World {
             h.i64(b.boost);
             h.u32(b.age);
             h.u32(b.life);
+        }
+        h.u32(self.bonds.len() as u32);
+        for b in &self.bonds {
+            h.u32(b.sa);
+            h.u32(b.ida);
+            h.u32(b.sb);
+            h.u32(b.idb);
         }
 
         let mut idx: Vec<usize> = (0..self.orgs.capacity())

@@ -65,7 +65,7 @@ fn main() {
         }
     }
     println!(
-        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} chem(em/up/res/sen)={}/{}/{}/{} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} chem(em/up/res/sen)={}/{}/{}/{} adh={:.3} bonds={} maxbody={} births={births} deaths={deaths} hash={:016x}",
         w.population(),
         avg_complexity(&w),
         carn_frac(&w) * 100.0,
@@ -78,6 +78,9 @@ fn main() {
         chem_roles(&w).1,
         chem_roles(&w).2,
         chem_roles(&w).3,
+        avg_adhesion(&w),
+        w.bonds.len(),
+        max_body(&w),
         w.state_hash()
     );
 }
@@ -215,6 +218,58 @@ fn chem_roles(w: &World) -> (u32, u32, u32, u32) {
         }
     }
     (em, up, re, se)
+}
+
+/// Average `adhesion` trait over living cells — how sticky the population has become (0 = never
+/// bond). The heritable driver of bodies; watch it drift up if clumping is being selected for.
+fn avg_adhesion(w: &World) -> f32 {
+    let o = &w.orgs;
+    let (mut s, mut n) = (0.0f32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            s += o.g_adhesion[i];
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        s / n as f32
+    }
+}
+
+/// The largest **body**: the biggest connected cluster of bonded cells. `1` = no bodies (every
+/// cell is a loner). This is the headline emergence detector for M3 — a persistent value above a
+/// few, reproducible across seeds, is genuine multicellularity; noise near 1 means it hasn't paid.
+fn max_body(w: &World) -> u32 {
+    let cap = w.orgs.capacity();
+    // union-find over slots, joined by each valid bond; then the largest component among live cells
+    let mut parent: Vec<u32> = (0..cap as u32).collect();
+    fn find(parent: &mut [u32], mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            parent[x as usize] = parent[parent[x as usize] as usize];
+            x = parent[x as usize];
+        }
+        x
+    }
+    for b in &w.bonds {
+        let (a, c) = (find(&mut parent, b.sa), find(&mut parent, b.sb));
+        if a != c {
+            parent[a as usize] = c;
+        }
+    }
+    let mut size = vec![0u32; cap];
+    let mut best = 0u32;
+    for i in 0..cap {
+        if w.orgs.alive[i] {
+            let r = find(&mut parent, i as u32) as usize;
+            size[r] += 1;
+            if size[r] > best {
+                best = size[r];
+            }
+        }
+    }
+    best
 }
 
 fn carn_frac(w: &World) -> f32 {

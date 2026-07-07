@@ -23,6 +23,8 @@ pub mod subsystem {
     pub const TERRAIN: u64 = 4;
     pub const ELEVATION: u64 = 5;
     pub const GENOME: u64 = 6;
+    /// Incomplete-division roll: does a newborn stay physically bonded to its parent?
+    pub const ADHESION: u64 = 7;
 }
 
 /// PCG-XSH-RR 64/32. Small, portable, fully deterministic.

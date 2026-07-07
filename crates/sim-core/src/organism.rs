@@ -27,6 +27,8 @@ pub struct Organisms {
     pub g_habitat: Vec<Scalar>,
     /// Digestion specialization per organism; see [`Genome::diet`].
     pub g_diet: Vec<Scalar>,
+    /// Stickiness per organism (M3): P(newborn stays bonded to parent); see [`Phenotype::adhesion`].
+    pub g_adhesion: Vec<Scalar>,
     pub cr: Vec<u8>,
     pub cg: Vec<u8>,
     pub cb: Vec<u8>,
@@ -96,6 +98,7 @@ impl Organisms {
             self.g_repro[i] = ph.repro;
             self.g_habitat[i] = ph.habitat;
             self.g_diet[i] = ph.diet;
+            self.g_adhesion[i] = ph.adhesion;
             self.cr[i] = ph.r;
             self.cg[i] = ph.g;
             self.cb[i] = ph.b;
@@ -123,6 +126,7 @@ impl Organisms {
             self.g_repro.push(ph.repro);
             self.g_habitat.push(ph.habitat);
             self.g_diet.push(ph.diet);
+            self.g_adhesion.push(ph.adhesion);
             self.cr.push(ph.r);
             self.cg.push(ph.g);
             self.cb.push(ph.b);

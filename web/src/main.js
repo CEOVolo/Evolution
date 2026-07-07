@@ -101,6 +101,7 @@ async function main() {
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
   $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
   $("bloomrate").oninput = (e) => sim.set_bloom_rate(+e.target.value);
+  $("bondstiff").oninput = (e) => sim.set_bond_stiffness(+e.target.value);
   $("gear").onclick = () => $("settings").classList.toggle("hidden");
   $("drawer-toggle").onclick = () => {
     const collapsed = $("drawer").classList.toggle("collapsed");
@@ -213,7 +214,7 @@ async function main() {
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, tag) {
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds, tag) {
     const pred = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
     const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
@@ -221,6 +222,10 @@ async function main() {
       emit + uptake + resist + sense > 0
         ? `выд ${emit | 0} · погл ${uptake | 0} · уст ${resist | 0} · чувств ${sense | 0}`
         : "—";
+    const body =
+      (bonds | 0) > 0
+        ? `🧫 в теле · ${bonds | 0} связ. · клейкость ${(+adhesion).toFixed(2)}`
+        : `одиночка · клейкость ${(+adhesion).toFixed(2)}`;
     return `
       <div class="row" style="margin:0 0 8px">
         <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
@@ -235,7 +240,8 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>геном 🧬</span><b>${genes | 0} генов</b></div>
-      <div class="row mono" style="margin:4px 0"><span>химия 🧪</span><b>${chem}</b></div>`;
+      <div class="row mono" style="margin:4px 0"><span>химия 🧪</span><b>${chem}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>тело 🧫</span><b>${body}</b></div>`;
   }
   function inspectHover(mx, my) {
     const now = performance.now();
@@ -247,8 +253,8 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, "");
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds, "");
   }
 
   // --- population chart + trait bars ---
@@ -534,6 +540,19 @@ async function main() {
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(fieldCanvas, ox, oy, worldW * s, worldH * s);
 
+    // bonds (bodies) — links between cells that stay stuck together; drawn under the cells
+    const bo = sim.bonds();
+    if (bo.length) {
+      ctx.strokeStyle = "rgba(120,255,225,0.5)";
+      ctx.lineWidth = Math.max(1, 1.4 * s);
+      ctx.beginPath();
+      for (let i = 0; i < bo.length; i += 4) {
+        ctx.moveTo(ox + bo[i] * s, oy + bo[i + 1] * s);
+        ctx.lineTo(ox + bo[i + 2] * s, oy + bo[i + 3] * s);
+      }
+      ctx.stroke();
+    }
+
     // organisms
     const p = sim.positions();
     const sz = sim.sizes();
@@ -639,12 +658,12 @@ async function main() {
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes, emit, uptake, resist, sense] = info;
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds] = info;
     cam.x = px;
     cam.y = py;
     inspectBody.innerHTML = cellCard(
       px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet, genes,
-      emit, uptake, resist, sense,
+      emit, uptake, resist, sense, adhesion, bonds,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }

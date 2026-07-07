@@ -28,8 +28,14 @@ pub enum Channel {
     ColorR = 5,
     ColorG = 6,
     ColorB = 7,
+    /// Stickiness (M3): the probability a newborn stays physically bonded to its parent. High
+    /// adhesion lineages leave offspring attached, so bodies (bonded cell clusters) can emerge —
+    /// or not, if the crowding cost of clumping outweighs the gape-limited-predation benefit.
+    /// Founders carry a small spread (standing variation for selection to act on), like every
+    /// other trait; whether bonding actually spreads is left entirely to selection.
+    Adhesion = 8,
 }
-pub const N_CHANNELS: usize = 8;
+pub const N_CHANNELS: usize = 9;
 
 /// A gene's payload. The tag discriminant is serialized and hashed, so it is APPEND-ONLY.
 ///
@@ -84,6 +90,8 @@ pub struct Phenotype {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+    /// Stickiness in `[0, 1]` (M3) — the probability a newborn stays bonded to its parent.
+    pub adhesion: Scalar,
     // --- chemical roles (M2), developed from Emit/Uptake/Sense/Resist genes ---
     /// Bit `k` set ⇒ senses chemical channel `k` (its slot feeds the brain).
     pub sense_mask: u16,
@@ -148,6 +156,10 @@ pub fn develop(g: &Genome) -> Phenotype {
         r: compose_u8(128, acc[Channel::ColorR as usize]),
         g: compose_u8(128, acc[Channel::ColorG as usize]),
         b: compose_u8(128, acc[Channel::ColorB as usize]),
+        // Standing variation like every other trait (base 0, founders seed a small spread). We
+        // seed *variation in the trait*, never bodies themselves — whether adhesion is selected up
+        // (bonding pays) or down (crowding wins) is decided by the ecology, not by us.
+        adhesion: compose(0.0, acc[Channel::Adhesion as usize], 0.0, 1.0),
         sense_mask,
         resist_mask,
         emit_ch,
@@ -202,6 +214,8 @@ impl Genome {
         push_traitmod(&mut genes, rng, Channel::ColorR, (cr - 128) as i16);
         push_traitmod(&mut genes, rng, Channel::ColorG, (cg - 128) as i16);
         push_traitmod(&mut genes, rng, Channel::ColorB, (cb - 128) as i16);
+        let adhesion = rng.next_f32_unit() * 0.4; // standing variation in stickiness (0..0.4)
+        push_traitmod(&mut genes, rng, Channel::Adhesion, milli(adhesion));
         Genome { genes }
     }
 
@@ -456,5 +470,32 @@ mod tests {
         assert_eq!(ph.uptake_ch[0], 150);
         assert_eq!(ph.sense_mask, 1 << 1);
         assert_eq!(ph.resist_mask, 1 << 2);
+    }
+
+    #[test]
+    fn adhesion_founder_spread_and_gene_mapping() {
+        // Founders carry standing variation in [0, 0.4] — not seeded bodies, just a trait spread.
+        let mut rng = Pcg32::new(999, 1);
+        for _ in 0..500 {
+            let a = develop(&Genome::founder(&mut rng)).adhesion;
+            assert!(
+                (0.0..=0.4).contains(&a),
+                "founder adhesion out of range: {a}"
+            );
+        }
+        // A positive Adhesion TraitMod raises it; it clamps into [0, 1].
+        let g = Genome {
+            genes: vec![tm(Channel::Adhesion, 600)],
+        };
+        assert!((develop(&g).adhesion - 0.6).abs() < 1e-6);
+        let g2 = Genome {
+            genes: vec![tm(Channel::Adhesion, 4000)],
+        };
+        assert_eq!(develop(&g2).adhesion, 1.0);
+        // Negative sums clamp to 0 (no "anti-stick").
+        let g3 = Genome {
+            genes: vec![tm(Channel::Adhesion, -500)],
+        };
+        assert_eq!(develop(&g3).adhesion, 0.0);
     }
 }
