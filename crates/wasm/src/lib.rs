@@ -386,6 +386,9 @@ impl Sim {
         let mut size = [0f32; 8];
         let mut carn = [0f32; 8];
         let mut brain = [0f32; 8];
+        let mut hab = [0f32; 8];
+        let mut ener = [0f64; 8];
+        let mut wsl = [[0u32; 3]; 8]; // water / shore / land tally per colour group
         for i in 0..o.capacity() {
             if o.alive[i] {
                 let bkt = (((o.cr[i] > 127) as usize) << 2)
@@ -395,6 +398,17 @@ impl Sim {
                 size[bkt] += o.g_size[i];
                 carn[bkt] += o.carnivory[i];
                 brain[bkt] += o.brains[i].complexity() as f32;
+                let h = o.g_habitat[i];
+                hab[bkt] += h;
+                ener[bkt] += o.energy[i] as f64;
+                let k = if h < 0.4 {
+                    0
+                } else if h > 0.6 {
+                    2
+                } else {
+                    1
+                };
+                wsl[bkt][k] += 1;
             }
         }
         let mut order: Vec<usize> = (0..8).filter(|&b| count[b] > 0).collect();
@@ -409,8 +423,69 @@ impl Sim {
             let g = if b & 2 != 0 { 210 } else { 45 };
             let bl = if b & 1 != 0 { 210 } else { 45 };
             out.push_str(&format!(
-                "{{\"name\":\"{}\",\"count\":{},\"size\":{:.2},\"carn\":{:.2},\"brain\":{:.1},\"r\":{},\"g\":{},\"b\":{}}}",
-                NAMES[b], count[b], size[b] / n, carn[b] / n, brain[b] / n, r, g, bl
+                "{{\"bkt\":{},\"name\":\"{}\",\"count\":{},\"size\":{:.2},\"carn\":{:.2},\"brain\":{:.1},\"hab\":{:.2},\"energy\":{:.0},\"water\":{},\"shore\":{},\"land\":{},\"r\":{},\"g\":{},\"b\":{}}}",
+                b, NAMES[b], count[b], size[b] / n, carn[b] / n, brain[b] / n,
+                hab[b] / n, ener[b] / n as f64, wsl[b][0], wsl[b][1], wsl[b][2], r, g, bl
+            ));
+        }
+        out.push(']');
+        out
+    }
+
+    /// Record-holders (display only): the single most extreme live organism in each category,
+    /// as a JSON array `[{cat,id,val,env,r,g,b}]`. The `id` lets the UI follow it on click.
+    pub fn records(&self) -> String {
+        let o = &self.world.orgs;
+        let mut best = [(f64::MIN, usize::MAX); 5]; // age, energy, size, brain, carnivory
+        for i in 0..o.capacity() {
+            if !o.alive[i] {
+                continue;
+            }
+            let vals = [
+                o.age[i] as f64,
+                o.energy[i] as f64,
+                o.g_size[i] as f64,
+                o.brains[i].complexity() as f64,
+                o.carnivory[i] as f64,
+            ];
+            for k in 0..5 {
+                if vals[k] > best[k].0 {
+                    best[k] = (vals[k], i);
+                }
+            }
+        }
+        const CATS: [&str; 5] = [
+            "🕰 старейшина",
+            "⚡ богач",
+            "📏 гигант",
+            "🧠 умник",
+            "🦈 хищник",
+        ];
+        let mut out = String::from("[");
+        for k in 0..5 {
+            let (val, i) = best[k];
+            if i == usize::MAX {
+                continue;
+            }
+            if out.len() > 1 {
+                out.push(',');
+            }
+            let vs = match k {
+                2 => format!("{val:.2}"),            // size
+                4 => format!("{:.0}%", val * 100.0), // carnivory
+                _ => format!("{val:.0}"),            // age / energy / brain
+            };
+            let h = o.g_habitat[i];
+            let env = if h < 0.4 {
+                "🌊"
+            } else if h > 0.6 {
+                "⛰"
+            } else {
+                "🏖"
+            };
+            out.push_str(&format!(
+                "{{\"cat\":\"{}\",\"id\":{},\"val\":\"{}\",\"env\":\"{}\",\"r\":{},\"g\":{},\"b\":{}}}",
+                CATS[k], o.id[i], vs, env, o.cr[i], o.cg[i], o.cb[i]
             ));
         }
         out.push(']');

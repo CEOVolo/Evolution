@@ -50,6 +50,11 @@ async function main() {
   function unfollow() {
     followId = null;
   }
+  function followById(id) {
+    followId = id | 0;
+    if (cam.zoom < 4) cam.zoom = 8;
+    toast("👁 Следим за клеткой #" + followId + " — 2×клик, чтобы отпустить");
+  }
 
   // --- controls ---
   let playing = true;
@@ -76,6 +81,17 @@ async function main() {
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
   $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
+  $("species").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-bkt]");
+    if (!row) return;
+    const b = +row.dataset.bkt;
+    selectedSpecies = selectedSpecies === b ? null : b;
+    updateSpecies();
+  });
+  $("records").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-follow]");
+    if (row) followById(+row.dataset.follow);
+  });
 
   const presetSel = $("preset");
   for (let id = 0; id < Sim.preset_count(); id++) {
@@ -151,11 +167,7 @@ async function main() {
     if (dragging && brush === "observe" && !moved) {
       const w = screenToWorld(downX, downY);
       const n = sim.nearest(w.x, w.y);
-      if (n.length) {
-        followId = n[10] | 0;
-        if (cam.zoom < 4) cam.zoom = 8;
-        toast("👁 Следим за клеткой #" + followId + " — 2×клик, чтобы отпустить");
-      }
+      if (n.length) followById(n[10]);
     }
     dragging = false;
   });
@@ -246,6 +258,20 @@ async function main() {
     const hh = sim.habitat_hist();
     $("habitat").innerHTML = `🌊 ${hh[0].toLocaleString()} · 🏖 ${hh[1].toLocaleString()} · ⛰ ${hh[2].toLocaleString()}`;
   }
+  let selectedSpecies = null;
+  function speciesDetail(s) {
+    const env = s.hab < 0.4 ? "🌊 водные" : s.hab > 0.6 ? "⛰ сухопутные" : "🏖 береговые";
+    const diet =
+      s.carn > 0.12
+        ? `🔴 охотятся (${Math.round(s.carn * 100)}%)`
+        : `🌿 в основном травоядные (${Math.round(s.carn * 100)}%)`;
+    return `<div class="detail">
+      <div>в среднем <b>${env}</b> · ген «среда» ${s.hab.toFixed(2)}</div>
+      <div>где живут: 🌊 <b>${s.water.toLocaleString()}</b> · 🏖 <b>${s.shore.toLocaleString()}</b> · ⛰ <b>${s.land.toLocaleString()}</b></div>
+      <div>рацион: <b>${diet}</b></div>
+      <div>размер <b>${s.size.toFixed(2)}</b> · мозг 🧠<b>${s.brain}</b> · энергия ~<b>${(+s.energy).toLocaleString()}</b> · всего <b>${s.count.toLocaleString()}</b></div>
+    </div>`;
+  }
   function updateSpecies() {
     $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
     let list;
@@ -255,10 +281,27 @@ async function main() {
       return;
     }
     $("species").innerHTML = list
+      .map((s) => {
+        const on = s.bkt === selectedSpecies ? " on" : "";
+        const row =
+          `<div class="row clk${on}" data-bkt="${s.bkt}" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${s.r},${s.g},${s.b})"></span> ${s.name}</span>` +
+          `<span class="mono" style="color:var(--muted2)">${s.count.toLocaleString()} · 🔴${Math.round(s.carn * 100)}% · 🧠${s.brain}</span></div>`;
+        return row + (s.bkt === selectedSpecies ? speciesDetail(s) : "");
+      })
+      .join("");
+  }
+  function updateRecords() {
+    let list;
+    try {
+      list = JSON.parse(sim.records());
+    } catch {
+      return;
+    }
+    $("records").innerHTML = list
       .map(
-        (s) =>
-          `<div class="row" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${s.r},${s.g},${s.b})"></span> ${s.name}</span>` +
-          `<span class="mono" style="color:var(--muted2)">${s.count.toLocaleString()} · 🔴${Math.round(s.carn * 100)}% · 🧠${s.brain}</span></div>`
+        (r) =>
+          `<div class="row clk" data-follow="${r.id}" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${r.r},${r.g},${r.b})"></span> ${r.cat}</span>` +
+          `<span class="mono" style="color:var(--muted2)">${r.env} ${r.val} · #${r.id}</span></div>`
       )
       .join("");
   }
@@ -429,6 +472,7 @@ async function main() {
       updateTraits();
       updateHealth();
       updateSpecies();
+      updateRecords();
       narrate();
     }
     frame++;

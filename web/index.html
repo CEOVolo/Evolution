@@ -66,6 +66,12 @@
       @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
       .fade { transition: opacity .6s; opacity: 0; }
       .help { color: var(--muted2); cursor: help; border-bottom: 1px dotted #557; }
+      .clk { cursor: pointer; border-radius: 6px; padding: 3px 5px; margin: 0 -5px; }
+      .clk:hover { background: #16241a; }
+      .clk.on { background: #16241a; box-shadow: inset 2px 0 0 var(--accent); }
+      .detail { margin: 4px 0 2px; padding: 8px 9px; background: #0c130c; border: 1px solid var(--line);
+        border-radius: 8px; font-size: 12px; color: var(--muted2); }
+      .detail b { color: var(--ink); font-weight: 600; }
     </style>
   </head>
   <body>
@@ -134,6 +140,11 @@
             <input id="habcost" type="range" min="0" max="300" value="90" /></div>
         </div>
 
+        <div class="card" id="inspect">
+          <h2>Инспектор клетки</h2>
+          <div class="empty" id="inspect-body">Наведи курсор на точку в мире (или кликни — следить).</div>
+        </div>
+
         <div class="card">
           <h2>Популяция во времени</h2>
           <canvas id="chart" width="272" height="64"></canvas>
@@ -167,13 +178,13 @@
         </div>
 
         <div class="card">
-          <h2>Популяции <span class="help" title="Группы по наследуемой окраске — грубые «виды». Видно, кто разрастается, кто хищничает, у кого сложнее мозг.">ⓘ</span></h2>
-          <div id="species" style="display:flex;flex-direction:column;gap:6px;font-size:12.5px">—</div>
+          <h2>Популяции <span class="help" title="Группы по наследуемой окраске — грубые «виды». Кликни группу, чтобы увидеть, где она живёт и чем питается.">ⓘ</span></h2>
+          <div id="species" style="display:flex;flex-direction:column;gap:4px;font-size:12.5px">—</div>
         </div>
 
-        <div class="card" id="inspect">
-          <h2>Инспектор клетки</h2>
-          <div class="empty" id="inspect-body">Наведи курсор на точку в мире.</div>
+        <div class="card">
+          <h2>Рекордсмены <span class="help" title="Самые выдающиеся клетки прямо сейчас. Кликни — камера полетит за ней.">ⓘ</span></h2>
+          <div id="records" style="display:flex;flex-direction:column;gap:4px;font-size:12.5px">—</div>
         </div>
       </div>
     </div>
