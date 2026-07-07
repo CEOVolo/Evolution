@@ -21,6 +21,7 @@ pub mod subsystem {
     pub const MUTATION: u64 = 2;
     pub const BLOOM: u64 = 3;
     pub const TERRAIN: u64 = 4;
+    pub const ELEVATION: u64 = 5;
 }
 
 /// PCG-XSH-RR 64/32. Small, portable, fully deterministic.

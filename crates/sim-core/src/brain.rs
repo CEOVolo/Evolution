@@ -15,7 +15,7 @@
 use crate::math::{tanh_det, Scalar};
 use crate::rng::Pcg32;
 
-pub const N_IN: usize = 10;
+pub const N_IN: usize = 11;
 pub const N_OUT: usize = 4;
 pub const OUT_BASE: usize = N_IN;
 
@@ -32,6 +32,8 @@ pub const IN_NN_RELSIZE: usize = 7;
 pub const IN_DAYLIGHT: usize = 8;
 /// Local pheromone/signal concentration (what others have emitted here).
 pub const IN_SIGNAL: usize = 9;
+/// Local elevation (−1 deep water … +1 high land) — lets avoidance/migration evolve too.
+pub const IN_ELEVATION: usize = 10;
 
 // Output semantics.
 pub const OUT_AX: usize = 0;
@@ -208,7 +210,7 @@ mod tests {
     fn forward_is_deterministic_and_grows() {
         let mut rng = Pcg32::new(1, 1);
         let mut b = Brain::random_minimal(&mut rng);
-        let inp = [1.0, 0.4, -0.2, 0.1, 0.7, -0.3, 0.2, 0.5, 0.6, -0.1];
+        let inp = [1.0, 0.4, -0.2, 0.1, 0.7, -0.3, 0.2, 0.5, 0.6, -0.1, 0.3];
         let mut s1 = Vec::new();
         let mut s2 = Vec::new();
         let mut ba = b.clone();

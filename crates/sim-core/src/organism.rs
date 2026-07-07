@@ -13,6 +13,9 @@ pub struct Genome {
     pub size: Scalar,
     pub metabolism: Scalar,
     pub repro: Scalar,
+    /// Preferred elevation in `0..=1` (0 = deep water, 1 = high land). With the local terrain
+    /// this decides where the organism thrives vs. suffers — the seed of water/land niches.
+    pub habitat: Scalar,
     pub r: u8,
     pub g: u8,
     pub b: u8,
@@ -24,6 +27,7 @@ impl Genome {
             size: 1.0,
             metabolism: 1.0,
             repro: 1.0,
+            habitat: 0.5,
             r: 120,
             g: 200,
             b: 120,
@@ -46,6 +50,8 @@ pub struct Organisms {
     pub g_size: Vec<Scalar>,
     pub g_metab: Vec<Scalar>,
     pub g_repro: Vec<Scalar>,
+    /// Preferred elevation (habitat) per organism; see [`Genome::habitat`].
+    pub g_habitat: Vec<Scalar>,
     pub cr: Vec<u8>,
     pub cg: Vec<u8>,
     pub cb: Vec<u8>,
@@ -101,6 +107,7 @@ impl Organisms {
             self.g_size[i] = s.genome.size;
             self.g_metab[i] = s.genome.metabolism;
             self.g_repro[i] = s.genome.repro;
+            self.g_habitat[i] = s.genome.habitat;
             self.cr[i] = s.genome.r;
             self.cg[i] = s.genome.g;
             self.cb[i] = s.genome.b;
@@ -121,6 +128,7 @@ impl Organisms {
             self.g_size.push(s.genome.size);
             self.g_metab.push(s.genome.metabolism);
             self.g_repro.push(s.genome.repro);
+            self.g_habitat.push(s.genome.habitat);
             self.cr.push(s.genome.r);
             self.cg.push(s.genome.g);
             self.cb.push(s.genome.b);
@@ -146,6 +154,7 @@ impl Organisms {
             size: self.g_size[i],
             metabolism: self.g_metab[i],
             repro: self.g_repro[i],
+            habitat: self.g_habitat[i],
             r: self.cr[i],
             g: self.cg[i],
             b: self.cb[i],

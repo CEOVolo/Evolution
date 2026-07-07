@@ -13,8 +13,8 @@ use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F36; // "EVO6"
-const VERSION: u16 = 6;
+const MAGIC: u32 = 0x45564F37; // "EVO7"
+const VERSION: u16 = 7;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -38,6 +38,10 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     o.u32(w.terrain.len() as u32);
     for &t in &w.terrain {
         o.f32(t);
+    }
+    o.u32(w.elevation.len() as u32);
+    for &el in &w.elevation {
+        o.f32(el);
     }
     o.u32(w.detritus.len() as u32);
     for &dt in &w.detritus {
@@ -80,6 +84,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     for _ in 0..tlen {
         terrain.push(r.f32()?);
     }
+    let elen = r.u32()? as usize;
+    let mut elevation = Vec::with_capacity(elen);
+    for _ in 0..elen {
+        elevation.push(r.f32()?);
+    }
     let dlen = r.u32()? as usize;
     let mut detritus = Vec::with_capacity(dlen);
     for _ in 0..dlen {
@@ -98,7 +107,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
 
     let orgs = read_orgs(&mut r)?;
     Ok(World::from_parts(
-        params, seed, tick_count, field, terrain, detritus, signal, blooms, orgs,
+        params, seed, tick_count, field, terrain, elevation, detritus, signal, blooms, orgs,
     ))
 }
 
@@ -114,6 +123,8 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.i64(p.bloom_boost);
     o.i64(p.decompose_div);
     o.i64(p.corpse_size_factor);
+    o.f32(p.water_level);
+    o.i64(p.habitat_cost);
     o.i64(p.emit_scale);
     o.i64(p.signal_cap);
     o.f32(p.accel_scale);
@@ -158,6 +169,8 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         bloom_boost: r.i64()?,
         decompose_div: r.i64()?,
         corpse_size_factor: r.i64()?,
+        water_level: r.f32()?,
+        habitat_cost: r.i64()?,
         emit_scale: r.i64()?,
         signal_cap: r.i64()?,
         accel_scale: r.f32()?,
@@ -256,6 +269,7 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.f32(s.g_size[i]);
         o.f32(s.g_metab[i]);
         o.f32(s.g_repro[i]);
+        o.f32(s.g_habitat[i]);
         o.u8(s.cr[i]);
         o.u8(s.cg[i]);
         o.u8(s.cb[i]);
@@ -287,6 +301,7 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.g_size.push(r.f32()?);
         s.g_metab.push(r.f32()?);
         s.g_repro.push(r.f32()?);
+        s.g_habitat.push(r.f32()?);
         s.cr.push(r.u8()?);
         s.cg.push(r.u8()?);
         s.cb.push(r.u8()?);

@@ -89,6 +89,9 @@
             Клетки крупнее могут <b>съесть тех, кто мельче</b> (хищники — с красным ободком).
             Всё — цвет, размер, поведение — <b>наследуется и мутирует</b>. Никто не задавал заранее,
             кто станет травоядным, а кто хищником — это вырастает само.
+            <b>Синее — вода.</b> У клетки есть ген «среда»: если он не совпадает с местом, она теряет энергию,
+            поэтому глубокая вода смертельна для неприспособленных и <b>делит мир на ареалы</b>. Кто-то
+            приспособится жить в воде, кто-то выйдет на сушу — <b>сам, отбором</b>, а не по нашему сценарию.
           </div>
         </div>
 
@@ -96,6 +99,7 @@
           <h2>Легенда</h2>
           <div class="legend">
             <span><span class="sw" style="background:#1a7d2e"></span>дымка — еда (ярче = больше)</span>
+            <span><span class="sw" style="background:#2f6fb0"></span>синее — вода (барьер между ареалами)</span>
             <span><span class="sw" style="background:#e0e0e0"></span>точка — живая клетка</span>
             <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — её гены (наследуется)</span>
             <span><span class="sw" style="background:#cfcfcf"></span>крупнее точка — крупнее тело</span>
@@ -126,6 +130,8 @@
             <input id="regrow" type="range" min="0" max="30" value="6" /></div>
           <div class="row"><label title="Сколько энергии клетка забирает за укус">Аппетит</label>
             <input id="eat" type="range" min="5" max="150" value="60" /></div>
+          <div class="row"><label title="Насколько сильно чужая среда (особенно глубокая вода) высасывает энергию — сила барьера между ареалами">Суровость среды</label>
+            <input id="habcost" type="range" min="0" max="300" value="90" /></div>
         </div>
 
         <div class="card">
@@ -156,6 +162,8 @@
           </div>
           <div style="margin-top:11px;font-size:12px;color:var(--muted2)">причины смерти (за кадр)</div>
           <div id="deaths" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
+          <div style="margin-top:11px;font-size:12px;color:var(--muted2)">кто где приспособлен (ген «среда»)</div>
+          <div id="habitat" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
         </div>
 
         <div class="card">

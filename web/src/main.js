@@ -75,6 +75,7 @@ async function main() {
   $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
+  $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
 
   const presetSel = $("preset");
   for (let id = 0; id < Sim.preset_count(); id++) {
@@ -164,14 +165,16 @@ async function main() {
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, tag) {
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, tag) {
     const diet = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
+    const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
     return `
       <div class="row" style="margin:0 0 8px">
         <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
         <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
       </div>
       <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${diet}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>среда (ген)</span><b>${env} ${habitat.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>энергия</span><b>${energy | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
@@ -188,8 +191,8 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, "");
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, "");
   }
 
   // --- population chart + trait bars ---
@@ -240,6 +243,8 @@ async function main() {
     bar("move", spd / 2.5);
     const dc = sim.deaths_recent();
     $("deaths").innerHTML = `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
+    const hh = sim.habitat_hist();
+    $("habitat").innerHTML = `🌊 ${hh[0].toLocaleString()} · 🏖 ${hh[1].toLocaleString()} · ⛰ ${hh[2].toLocaleString()}`;
   }
   function updateSpecies() {
     $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
@@ -298,15 +303,26 @@ async function main() {
     const sg = sim.signal();
     const dt = sim.detritus();
     const tr = sim.terrain();
+    const el = sim.elevation();
+    const waterCut = sim.water_level() * 255;
     const d = fimg.data;
     for (let i = 0, j = 0; i < f.length; i++, j += 4) {
       const v = f[i];
       const s = sg[i];
       const de = dt[i];
-      const barren = 255 - tr[i]; // landscape base: barren reads tan, fertile darker green
-      d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85;
-      d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2;
-      d[j + 2] = 18 + barren * 0.05 + s * 0.7;
+      if (el[i] < waterCut) {
+        // underwater: shallows are teal, the deep is dark blue — a barrier you can read at a glance
+        const depth = (waterCut - el[i]) / (waterCut || 1);
+        d[j] = 12 + s * 0.1;
+        d[j + 1] = 42 + v * 0.3 + (1 - depth) * 22 - depth * 12 + de * 0.2;
+        d[j + 2] = 70 + depth * 120 + s * 0.55;
+      } else {
+        // dry land: barren reads tan, fertile darker green; food/detritus/signal blend on top
+        const barren = 255 - tr[i];
+        d[j] = 10 + barren * 0.14 + s * 0.12 + de * 0.85;
+        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2;
+        d[j + 2] = 18 + barren * 0.05 + s * 0.7;
+      }
       d[j + 3] = 255;
     }
     fctx.putImageData(fimg, 0, 0);
@@ -387,11 +403,11 @@ async function main() {
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain] = info;
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat] = info;
     cam.x = px;
     cam.y = py;
     inspectBody.innerHTML = cellCard(
-      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain,
+      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }

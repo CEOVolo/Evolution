@@ -7,13 +7,14 @@
 use crate::params::WorldParams;
 
 /// Number of presets (ids `0..COUNT`).
-pub const COUNT: u32 = 4;
+pub const COUNT: u32 = 5;
 
 pub fn name(id: u32) -> &'static str {
     match id {
         1 => "Изобилие",
         2 => "Скудость",
         3 => "Хищный мир",
+        4 => "Архипелаг",
         _ => "Обычный",
     }
 }
@@ -44,6 +45,14 @@ pub fn preset(id: u32) -> WorldParams {
             p.predation_gain_den = 5;
             p.predation_size_ratio = 1.1;
             p.initial_population = 400;
+        }
+        4 => {
+            // Archipelago: harsh, dividing water. Seas cut the map into isolated habitats, so
+            // populations drift apart — and crossing (or leaving the water) takes real adaptation.
+            p.water_level = 0.5;
+            p.habitat_cost = 180;
+            p.initial_population = 500;
+            p.initial_energy = 300;
         }
         _ => {}
     }

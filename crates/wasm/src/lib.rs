@@ -175,6 +175,20 @@ impl Sim {
             .collect()
     }
 
+    /// Static elevation normalized to `0..=255` (0 = deep water, 255 = high land), row-major.
+    pub fn elevation(&self) -> Vec<u8> {
+        self.world
+            .elevation
+            .iter()
+            .map(|&e| (e * 255.0).clamp(0.0, 255.0) as u8)
+            .collect()
+    }
+
+    /// The waterline in `0..=1`: cells below this elevation read as underwater (for rendering).
+    pub fn water_level(&self) -> f32 {
+        self.world.params.water_level
+    }
+
     /// Bloom (food-patch) centres as `[x0, y0, x1, y1, ...]` in world coordinates.
     pub fn blooms(&self) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.world.blooms.len() * 2);
@@ -199,8 +213,8 @@ impl Sim {
     }
 
     /// Look up a specific organism by id (for follow mode). Returns
-    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, carnivory, brain]`, or empty
-    /// if that organism is no longer alive.
+    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, carnivory, brain, habitat]`,
+    /// or empty if that organism is no longer alive.
     pub fn by_id(&self, id: u32) -> Vec<f32> {
         let o = &self.world.orgs;
         for i in 0..o.capacity() {
@@ -218,6 +232,7 @@ impl Sim {
                     o.cb[i] as f32,
                     o.carnivory[i],
                     o.brains[i].complexity() as f32,
+                    o.g_habitat[i],
                 ];
             }
         }
@@ -317,6 +332,26 @@ impl Sim {
         }
     }
 
+    /// Population split by evolved habitat preference: `[water, shore, land]` (habitat < 0.4,
+    /// 0.4..=0.6, > 0.6). A lineage crossing from one to another is adaptation you can watch.
+    pub fn habitat_hist(&self) -> Vec<u32> {
+        let o = &self.world.orgs;
+        let (mut w, mut s, mut l) = (0u32, 0u32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let h = o.g_habitat[i];
+                if h < 0.4 {
+                    w += 1;
+                } else if h > 0.6 {
+                    l += 1;
+                } else {
+                    s += 1;
+                }
+            }
+        }
+        vec![w, s, l]
+    }
+
     /// Average brain complexity (hidden nodes + enabled connections) — watch it climb.
     pub fn avg_brain_complexity(&self) -> f32 {
         let o = &self.world.orgs;
@@ -400,7 +435,8 @@ impl Sim {
     }
 
     /// Nearest live organism to a world point, for the inspector. Returns
-    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, id, carnivory]` or empty.
+    /// `[px, py, energy, age, size, metabolism, repro, r, g, b, id, carnivory, brain, habitat]`
+    /// or empty.
     pub fn nearest(&self, wx: f32, wy: f32) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut best: i64 = -1;
@@ -434,6 +470,7 @@ impl Sim {
             o.id[i] as f32,
             o.carnivory[i],
             o.brains[i].complexity() as f32,
+            o.g_habitat[i],
         ]
     }
 
@@ -476,6 +513,10 @@ impl Sim {
 
     pub fn set_bite_amount(&mut self, raw: i32) {
         self.set_param(ParamId::BiteAmount, raw as i64);
+    }
+
+    pub fn set_habitat_cost(&mut self, raw: i32) {
+        self.set_param(ParamId::HabitatCost, raw as i64);
     }
 
     pub fn reset(&mut self, seed: u32) {

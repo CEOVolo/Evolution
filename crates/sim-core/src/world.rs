@@ -31,6 +31,10 @@ pub struct World {
     /// Static terrain fertility per cell (~0.15..1.9): a landscape of rich and barren places
     /// that permanently scales local regrowth, so different regions become different habitats.
     pub terrain: Vec<Scalar>,
+    /// Static elevation per cell (0=deep water .. 1=high land): seas, shores and highlands.
+    /// Low ground is a barrier — organisms pay for being where their evolved `habitat` trait
+    /// is a poor fit, so water divides the map and adapting to it (or leaving it) is selection.
+    pub elevation: Vec<Scalar>,
     /// Corpse/detritus field: dead organisms leave body mass here; it slowly decomposes into
     /// the food field (soil enrichment) and can be eaten directly (scavenging).
     pub detritus: Vec<i64>,
@@ -64,9 +68,11 @@ impl World {
             })
             .collect();
         let terrain = make_terrain(seed, &params);
+        let elevation = make_elevation(seed, &params);
         let mut w = World {
             field: vec![params.field_cap; cells],
             terrain,
+            elevation,
             detritus: vec![0; cells],
             signal: vec![0; cells],
             blooms,
@@ -84,6 +90,7 @@ impl World {
                 size: 0.6 + rng.next_f32_unit() * 1.0,
                 metabolism: 0.6 + rng.next_f32_unit() * 0.8,
                 repro: 0.6 + rng.next_f32_unit() * 0.8,
+                habitat: rng.next_f32_unit(),
                 r: rng.below(256) as u8,
                 g: rng.below(256) as u8,
                 b: rng.below(256) as u8,
@@ -111,6 +118,7 @@ impl World {
         tick_count: u64,
         field: Vec<i64>,
         terrain: Vec<Scalar>,
+        elevation: Vec<Scalar>,
         detritus: Vec<i64>,
         signal: Vec<i64>,
         blooms: Vec<(Scalar, Scalar)>,
@@ -123,6 +131,7 @@ impl World {
             tick_count,
             field,
             terrain,
+            elevation,
             detritus,
             signal,
             blooms,
@@ -330,6 +339,7 @@ impl World {
         let grad_y = (south - north) / cap;
         let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
         let signal_in = (self.signal[here] as f32 / p.signal_cap.max(1) as f32).min(1.0);
+        let elev_in = self.elevation[here] * 2.0 - 1.0;
 
         let nn = self.hash.nearest(&self.orgs, i, sx, sy, p.sense_radius);
         let (nn_dx, nn_dy, nn_relsize) = match nn {
@@ -352,6 +362,7 @@ impl World {
             nn_relsize,
             daylight * 2.0 - 1.0,
             signal_in,
+            elev_in,
         ];
 
         // --- think ---
@@ -425,7 +436,12 @@ impl World {
         let move_cost = (sq * (p.move_cost_coeff as f32) * size) as i64;
         let size_cost = ((size - 1.0) * p.size_upkeep as f32).max(0.0) as i64;
         let brain_cost = (self.orgs.brains[i].complexity() as i64 - 18).max(0) * p.brain_cost;
-        self.orgs.energy[i] -= p.basal_upkeep + brain_cost + size_cost + move_cost;
+        // habitat mismatch: being where your evolved `habitat` trait doesn't fit the local
+        // elevation drains energy (quadratically). Deep water is thus lethal to the ill-adapted
+        // — a barrier — and matching a place beats generalising, so water/land split into niches.
+        let mism = self.elevation[fi] - self.orgs.g_habitat[i];
+        let habitat_cost = ((p.habitat_cost as f32) * mism * mism) as i64;
+        self.orgs.energy[i] -= p.basal_upkeep + brain_cost + size_cost + move_cost + habitat_cost;
         self.orgs.carnivory[i] *= 0.99;
         self.orgs.age[i] += 1;
 
@@ -499,6 +515,7 @@ impl World {
                     size: 0.6 + rng.next_f32_unit() * 1.0,
                     metabolism: 0.6 + rng.next_f32_unit() * 0.8,
                     repro: 0.6 + rng.next_f32_unit() * 0.8,
+                    habitat: rng.next_f32_unit(),
                     r: rng.below(256) as u8,
                     g: rng.below(256) as u8,
                     b: rng.below(256) as u8,
@@ -557,6 +574,9 @@ impl World {
         for &t in &self.terrain {
             h.u32(canonical_bits(t));
         }
+        for &el in &self.elevation {
+            h.u32(canonical_bits(el));
+        }
         for &dt in &self.detritus {
             h.i64(dt);
         }
@@ -587,6 +607,7 @@ impl World {
             h.u32(canonical_bits(o.g_size[i]));
             h.u32(canonical_bits(o.g_metab[i]));
             h.u32(canonical_bits(o.g_repro[i]));
+            h.u32(canonical_bits(o.g_habitat[i]));
             h.u8(o.cr[i]);
             h.u8(o.cg[i]);
             h.u8(o.cb[i]);
@@ -655,6 +676,61 @@ fn make_terrain(seed: u64, p: &WorldParams) -> Vec<Scalar> {
     t
 }
 
+/// Generate a static elevation map (0 = deep water .. 1 = high land) from the seed: a few sea
+/// basins carved into a mid-level land, plus some highlands, each with linear falloff. The low
+/// ground (below `water_level`) reads as water and — via the habitat-mismatch cost — acts as a
+/// barrier that can split the map into isolated habitats. Deterministic (`+ - * / sqrt` only).
+fn make_elevation(seed: u64, p: &WorldParams) -> Vec<Scalar> {
+    let gw = p.grid_w as i32;
+    let gh = p.grid_h as i32;
+    let cw = p.width / p.grid_w as f32;
+    let ch = p.height / p.grid_h as f32;
+    let sea_r = p.width * 0.38;
+    let peak_r = p.width * 0.25;
+    let base = 0.62f32;
+    let mut rng = Pcg32::from_key(seed, subsystem::ELEVATION, 0);
+    let mut seas: Vec<(Scalar, Scalar)> = Vec::new();
+    for _ in 0..3 {
+        seas.push((
+            rng.next_f32_unit() * p.width,
+            rng.next_f32_unit() * p.height,
+        ));
+    }
+    let mut peaks: Vec<(Scalar, Scalar)> = Vec::new();
+    for _ in 0..3 {
+        peaks.push((
+            rng.next_f32_unit() * p.width,
+            rng.next_f32_unit() * p.height,
+        ));
+    }
+    let mut e = vec![base; p.cell_count()];
+    for cy in 0..gh {
+        let py = (cy as f32 + 0.5) * ch;
+        for cx in 0..gw {
+            let px = (cx as f32 + 0.5) * cw;
+            let mut h = base;
+            for &(sx, sy) in &seas {
+                let dx = px - sx;
+                let dy = py - sy;
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < sea_r {
+                    h -= 0.85 * (1.0 - d / sea_r);
+                }
+            }
+            for &(mx, my) in &peaks {
+                let dx = px - mx;
+                let dy = py - my;
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < peak_r {
+                    h += 0.4 * (1.0 - d / peak_r);
+                }
+            }
+            e[(cy * gw + cx) as usize] = h.clamp(0.0, 1.0);
+        }
+    }
+    e
+}
+
 fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
     let rate = p.mutation_rate;
     let d = p.mutation_delta;
@@ -666,6 +742,9 @@ fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
     }
     if rng.chance(rate) {
         g.repro = (g.repro + rng.next_f32_signed() * d).clamp(0.5, 1.5);
+    }
+    if rng.chance(rate) {
+        g.habitat = (g.habitat + rng.next_f32_signed() * d).clamp(0.0, 1.0);
     }
     if rng.chance(rate) {
         g.r = mut_u8(g.r, rng);

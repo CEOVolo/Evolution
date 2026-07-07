@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 5;
+pub const PARAMS_SCHEMA_VERSION: u16 = 6;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -22,6 +22,9 @@ pub enum ParamId {
     ReproThreshold,
     /// Energy a predator steals per bite.
     BiteAmount,
+    /// Habitat mismatch cost — how harshly the wrong substrate (esp. water) drains energy,
+    /// i.e. how strong a barrier water/low ground is between habitats.
+    HabitatCost,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -49,6 +52,15 @@ pub struct WorldParams {
     pub decompose_div: i64,
     /// Extra corpse mass deposited per unit of body size on death.
     pub corpse_size_factor: i64,
+
+    // landscape / habitat (water & barriers as an emergent divide)
+    /// Elevation (0=deep water .. 1=high land) below which a cell reads as underwater. Purely
+    /// the waterline for display and the water/land tally; the barrier itself is `habitat_cost`.
+    pub water_level: Scalar,
+    /// Energy drained per tick, scaled by the squared mismatch between an organism's evolved
+    /// `habitat` trait and the local elevation. High values make water a hard barrier and make
+    /// water vs land two distinct niches; who adapts to which is left entirely to selection.
+    pub habitat_cost: i64,
 
     // signals (emergent communication)
     pub emit_scale: i64,
@@ -114,6 +126,9 @@ impl Default for WorldParams {
             decompose_div: 40,
             corpse_size_factor: 55,
 
+            water_level: 0.4,
+            habitat_cost: 90,
+
             emit_scale: 120,
             signal_cap: 1000,
 
@@ -161,6 +176,7 @@ impl WorldParams {
             ParamId::EatRate => self.eat_rate = raw.max(0),
             ParamId::ReproThreshold => self.repro_threshold = raw.max(1),
             ParamId::BiteAmount => self.bite_amount = raw.max(0),
+            ParamId::HabitatCost => self.habitat_cost = raw.max(0),
         }
     }
 

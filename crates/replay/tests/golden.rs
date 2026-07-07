@@ -17,17 +17,17 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // Phase-1 behaviour (evolvable brains + predation). Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0xcd79_01ef_9b11_82dc, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0xe532_1baf_21de_b931, "seed=1 tick=500");
+    // Phase-1 behaviour + landscape (terrain, elevation/habitat barrier). Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0x3b2a_7a55_78e4_5b7a, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x0f0a_1d9c_ac37_713e, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x070f_bcd2_8453_b69f,
+        0x3023_bcf3_767e_f95a,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x8e02_987f_ca0e_ea9a,
+        0xd9de_da30_0a82_5bcb,
         "seed=2 tick=2000"
     );
 }
