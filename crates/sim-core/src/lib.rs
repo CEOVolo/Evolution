@@ -29,6 +29,7 @@ pub mod brain;
 pub mod command;
 pub mod environment;
 pub mod event;
+pub mod genome;
 pub mod math;
 pub mod organism;
 pub mod params;
@@ -39,6 +40,6 @@ pub mod world;
 
 pub use command::{ActorId, Command, CommandKind, COMMAND_SCHEMA_VERSION};
 pub use event::{DeathCause, Event, EventBatch};
-pub use organism::Genome;
+pub use genome::{develop, Gene, GeneKind, Genome, Phenotype};
 pub use params::{ParamId, WorldParams, PARAMS_SCHEMA_VERSION};
 pub use world::World;

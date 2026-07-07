@@ -9,12 +9,16 @@
 //! Hand-rolled little-endian with a magic + version header; floats stored as raw `to_bits()`.
 
 use crate::brain::{Brain, Conn};
+use crate::genome::{develop, Gene, GeneKind, Genome};
 use crate::organism::Organisms;
 use crate::params::WorldParams;
 use crate::world::World;
 
-const MAGIC: u32 = 0x45564F38; // "EVO8"
-const VERSION: u16 = 8;
+const MAGIC: u32 = 0x45564F39; // "EVO9"
+const VERSION: u16 = 9;
+/// Genome/development format version — bumped when the gene schema or `develop()` mapping
+/// changes, independently of the world `VERSION`.
+const GENOME_FORMAT_VERSION: u16 = 1;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -27,6 +31,7 @@ pub fn to_bytes(w: &World) -> Vec<u8> {
     let mut o = Writer { buf: Vec::new() };
     o.u32(MAGIC);
     o.u16(VERSION);
+    o.u16(GENOME_FORMAT_VERSION);
     o.u64(w.seed);
     o.u64(w.tick_count);
     write_params(&mut o, &w.params);
@@ -73,6 +78,10 @@ pub fn from_bytes(bytes: &[u8]) -> Result<World, SnapshotError> {
     let ver = r.u16()?;
     if ver != VERSION {
         return Err(SnapshotError::BadVersion(ver));
+    }
+    let gfv = r.u16()?;
+    if gfv != GENOME_FORMAT_VERSION {
+        return Err(SnapshotError::BadVersion(gfv));
     }
     let seed = r.u64()?;
     let tick_count = r.u64()?;
@@ -164,6 +173,9 @@ fn write_params(o: &mut Writer, p: &WorldParams) {
     o.f32(p.weight_mut_delta);
     o.f32(p.add_conn_prob);
     o.f32(p.add_node_prob);
+    o.f32(p.gene_dup_prob);
+    o.f32(p.gene_del_prob);
+    o.f32(p.gene_add_prob);
     o.u32(p.initial_population);
     o.i64(p.initial_energy);
     o.u32(p.max_population);
@@ -213,6 +225,9 @@ fn read_params(r: &mut Reader) -> Result<WorldParams, SnapshotError> {
         weight_mut_delta: r.f32()?,
         add_conn_prob: r.f32()?,
         add_node_prob: r.f32()?,
+        gene_dup_prob: r.f32()?,
+        gene_del_prob: r.f32()?,
+        gene_add_prob: r.f32()?,
         initial_population: r.u32()?,
         initial_energy: r.i64()?,
         max_population: r.u32()?,
@@ -268,6 +283,78 @@ fn read_brain(r: &mut Reader) -> Result<Brain, SnapshotError> {
     })
 }
 
+fn write_genome(o: &mut Writer, gm: &Genome) {
+    o.u32(gm.genes.len() as u32);
+    for g in &gm.genes {
+        o.u64(g.id);
+        write_gene_kind(o, g.kind);
+    }
+}
+
+fn write_gene_kind(o: &mut Writer, k: GeneKind) {
+    match k {
+        GeneKind::TraitMod { channel, amount } => {
+            o.u8(0);
+            o.u8(channel);
+            o.i16(amount);
+        }
+        GeneKind::Junk { payload } => {
+            o.u8(1);
+            o.u32(payload);
+        }
+        GeneKind::Emit { channel, rate } => {
+            o.u8(2);
+            o.u8(channel);
+            o.i16(rate);
+        }
+        GeneKind::Sense { channel, gain } => {
+            o.u8(3);
+            o.u8(channel);
+            o.i16(gain);
+        }
+        GeneKind::React { param, threshold } => {
+            o.u8(4);
+            o.u16(param);
+            o.i16(threshold);
+        }
+    }
+}
+
+fn read_genome(r: &mut Reader) -> Result<Genome, SnapshotError> {
+    let n = r.u32()? as usize;
+    let mut genes = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = r.u64()?;
+        let kind = read_gene_kind(r)?;
+        genes.push(Gene { id, kind });
+    }
+    Ok(Genome { genes })
+}
+
+fn read_gene_kind(r: &mut Reader) -> Result<GeneKind, SnapshotError> {
+    let tag = r.u8()?;
+    Ok(match tag {
+        0 => GeneKind::TraitMod {
+            channel: r.u8()?,
+            amount: r.i16()?,
+        },
+        1 => GeneKind::Junk { payload: r.u32()? },
+        2 => GeneKind::Emit {
+            channel: r.u8()?,
+            rate: r.i16()?,
+        },
+        3 => GeneKind::Sense {
+            channel: r.u8()?,
+            gain: r.i16()?,
+        },
+        4 => GeneKind::React {
+            param: r.u16()?,
+            threshold: r.i16()?,
+        },
+        _ => return Err(SnapshotError::Truncated),
+    })
+}
+
 fn write_orgs(o: &mut Writer, s: &Organisms) {
     let cap = s.capacity();
     o.u32(cap as u32);
@@ -282,16 +369,11 @@ fn write_orgs(o: &mut Writer, s: &Organisms) {
         o.u32(s.age[i]);
         o.u32(s.parent[i]);
         o.u64(s.birth_tick[i]);
-        o.f32(s.g_size[i]);
-        o.f32(s.g_metab[i]);
-        o.f32(s.g_repro[i]);
-        o.f32(s.g_habitat[i]);
-        o.f32(s.g_diet[i]);
-        o.u8(s.cr[i]);
-        o.u8(s.cg[i]);
-        o.u8(s.cb[i]);
         o.f32(s.carnivory[i]);
         write_brain(o, &s.brains[i]);
+        // The genome is authoritative; the g_*/c* phenotype columns are rebuilt via develop() on
+        // load, so we do NOT serialize them.
+        write_genome(o, &s.genomes[i]);
     }
     o.u32(s.free.len() as u32);
     for &f in &s.free {
@@ -315,16 +397,20 @@ fn read_orgs(r: &mut Reader) -> Result<Organisms, SnapshotError> {
         s.age.push(r.u32()?);
         s.parent.push(r.u32()?);
         s.birth_tick.push(r.u64()?);
-        s.g_size.push(r.f32()?);
-        s.g_metab.push(r.f32()?);
-        s.g_repro.push(r.f32()?);
-        s.g_habitat.push(r.f32()?);
-        s.g_diet.push(r.f32()?);
-        s.cr.push(r.u8()?);
-        s.cg.push(r.u8()?);
-        s.cb.push(r.u8()?);
         s.carnivory.push(r.f32()?);
         s.brains.push(read_brain(r)?);
+        // Rebuild the phenotype columns from the stored genome via develop() (pure, deterministic).
+        let gm = read_genome(r)?;
+        let ph = develop(&gm);
+        s.g_size.push(ph.size);
+        s.g_metab.push(ph.metabolism);
+        s.g_repro.push(ph.repro);
+        s.g_habitat.push(ph.habitat);
+        s.g_diet.push(ph.diet);
+        s.cr.push(ph.r);
+        s.cg.push(ph.g);
+        s.cb.push(ph.b);
+        s.genomes.push(gm);
     }
     let free_len = r.u32()? as usize;
     s.free = Vec::with_capacity(free_len);
@@ -348,6 +434,9 @@ impl Writer {
         self.buf.push(v as u8);
     }
     fn u16(&mut self, v: u16) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn i16(&mut self, v: i16) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
     fn u32(&mut self, v: u32) {
@@ -386,6 +475,9 @@ impl Reader<'_> {
     }
     fn u16(&mut self) -> Result<u16, SnapshotError> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    fn i16(&mut self) -> Result<i16, SnapshotError> {
+        Ok(i16::from_le_bytes(self.take(2)?.try_into().unwrap()))
     }
     fn u32(&mut self) -> Result<u32, SnapshotError> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))

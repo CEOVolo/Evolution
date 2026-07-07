@@ -264,6 +264,7 @@ impl Sim {
                     o.brains[i].complexity() as f32,
                     o.g_habitat[i],
                     o.g_diet[i],
+                    o.genomes[i].genes.len() as f32,
                 ];
             }
         }
@@ -390,6 +391,24 @@ impl Sim {
         for i in 0..o.capacity() {
             if o.alive[i] {
                 s += o.brains[i].complexity() as u64;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            s as f32 / n as f32
+        }
+    }
+
+    /// Average genome length (number of genes) — the open genome grows/shrinks as lineages
+    /// duplicate, delete and add genes.
+    pub fn avg_genome_len(&self) -> f32 {
+        let o = &self.world.orgs;
+        let (mut s, mut n) = (0u64, 0u64);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                s += o.genomes[i].genes.len() as u64;
                 n += 1;
             }
         }
@@ -580,6 +599,7 @@ impl Sim {
             o.brains[i].complexity() as f32,
             o.g_habitat[i],
             o.g_diet[i],
+            o.genomes[i].genes.len() as f32,
         ]
     }
 

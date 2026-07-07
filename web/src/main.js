@@ -192,7 +192,7 @@ async function main() {
   // --- inspector ---
   const inspectBody = $("inspect-body");
   let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, tag) {
+  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, tag) {
     const pred = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
     const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
     const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
@@ -208,7 +208,8 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>`;
+      <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>геном 🧬</span><b>${genes | 0} генов</b></div>`;
   }
   function inspectHover(mx, my) {
     const now = performance.now();
@@ -220,8 +221,8 @@ async function main() {
       inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
       return;
     }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, "");
+    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes] = n;
+    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, "");
   }
 
   // --- population chart + trait bars ---
@@ -293,6 +294,7 @@ async function main() {
   }
   function updateSpecies() {
     $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
+    $("a-genes").textContent = sim.avg_genome_len().toFixed(1);
     let list;
     try {
       list = JSON.parse(sim.species_json());
@@ -467,11 +469,11 @@ async function main() {
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet] = info;
+    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes] = info;
     cam.x = px;
     cam.y = py;
     inspectBody.innerHTML = cellCard(
-      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet,
+      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet, genes,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }

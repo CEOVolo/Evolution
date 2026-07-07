@@ -17,17 +17,17 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // Phase-1 + landscape + two-food niches (diet, density, innate bite). Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0x98eb_121c_0ba1_286b, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0x90ab_8f2a_9d53_189d, "seed=1 tick=500");
+    // + Open compositional genome (Vec<Gene> + develop pass, EVO9). Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0x7737_3d7f_217b_eed9, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0xa9f8_f4e1_0902_7931, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x2734_c174_45ef_6674,
+        0x5362_43de_0734_a3a6,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x6e35_f38d_0598_c6b2,
+        0x621e_3965_35fc_0987,
         "seed=2 tick=2000"
     );
 }

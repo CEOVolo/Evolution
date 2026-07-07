@@ -5,40 +5,8 @@
 //! ties break by stable `id`. Slots are reused from a LIFO free-list on death.
 
 use crate::brain::Brain;
+use crate::genome::{develop, Genome};
 use crate::math::Scalar;
-
-/// The genome's body/metabolism traits + colour. The brain is stored separately.
-#[derive(Clone, Copy, Debug)]
-pub struct Genome {
-    pub size: Scalar,
-    pub metabolism: Scalar,
-    pub repro: Scalar,
-    /// Preferred elevation in `0..=1` (0 = deep water, 1 = high land). With the local terrain
-    /// this decides where the organism thrives vs. suffers — the seed of water/land niches.
-    pub habitat: Scalar,
-    /// Digestion specialization in `0..=1`: efficiency on food A is `1-diet`, on food B is
-    /// `diet`. A strict trade-off (specialists beat the generalist on their own food), so two
-    /// non-fungible foods split the population into dietary niches instead of one monoculture.
-    pub diet: Scalar,
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-impl Genome {
-    pub fn base() -> Self {
-        Genome {
-            size: 1.0,
-            metabolism: 1.0,
-            repro: 1.0,
-            habitat: 0.5,
-            diet: 0.5,
-            r: 120,
-            g: 200,
-            b: 120,
-        }
-    }
-}
 
 #[derive(Clone, Default, Debug)]
 pub struct Organisms {
@@ -65,6 +33,9 @@ pub struct Organisms {
     pub carnivory: Vec<Scalar>,
     /// Per-organism growing brain.
     pub brains: Vec<Brain>,
+    /// Per-organism open genome (the raw `Vec<Gene>`); the `g_*`/`c*` columns above are its
+    /// developed phenotype, recomputed at insert. This is the authoritative heritable state.
+    pub genomes: Vec<Genome>,
 
     pub free: Vec<u32>,
     pub next_id: u32,
@@ -87,6 +58,7 @@ impl Organisms {
     pub fn with_capacity(cap: usize) -> Self {
         Organisms {
             brains: Vec::with_capacity(cap),
+            genomes: Vec::with_capacity(cap),
             ..Default::default()
         }
     }
@@ -99,6 +71,9 @@ impl Organisms {
     pub fn insert(&mut self, s: NewOrganism) -> (usize, u32) {
         let id = self.next_id;
         self.next_id += 1;
+        // Compile the genome into its phenotype once; the `g_*`/`c*` columns are develop()'s
+        // output (what `step_organism` reads), while the raw genome is stored authoritatively.
+        let ph = develop(&s.genome);
         let slot = if let Some(free) = self.free.pop() {
             let i = free as usize;
             self.alive[i] = true;
@@ -111,16 +86,17 @@ impl Organisms {
             self.age[i] = 0;
             self.parent[i] = s.parent;
             self.birth_tick[i] = s.birth_tick;
-            self.g_size[i] = s.genome.size;
-            self.g_metab[i] = s.genome.metabolism;
-            self.g_repro[i] = s.genome.repro;
-            self.g_habitat[i] = s.genome.habitat;
-            self.g_diet[i] = s.genome.diet;
-            self.cr[i] = s.genome.r;
-            self.cg[i] = s.genome.g;
-            self.cb[i] = s.genome.b;
+            self.g_size[i] = ph.size;
+            self.g_metab[i] = ph.metabolism;
+            self.g_repro[i] = ph.repro;
+            self.g_habitat[i] = ph.habitat;
+            self.g_diet[i] = ph.diet;
+            self.cr[i] = ph.r;
+            self.cg[i] = ph.g;
+            self.cb[i] = ph.b;
             self.carnivory[i] = 0.0;
             self.brains[i] = s.brain;
+            self.genomes[i] = s.genome;
             i
         } else {
             self.alive.push(true);
@@ -133,16 +109,17 @@ impl Organisms {
             self.age.push(0);
             self.parent.push(s.parent);
             self.birth_tick.push(s.birth_tick);
-            self.g_size.push(s.genome.size);
-            self.g_metab.push(s.genome.metabolism);
-            self.g_repro.push(s.genome.repro);
-            self.g_habitat.push(s.genome.habitat);
-            self.g_diet.push(s.genome.diet);
-            self.cr.push(s.genome.r);
-            self.cg.push(s.genome.g);
-            self.cb.push(s.genome.b);
+            self.g_size.push(ph.size);
+            self.g_metab.push(ph.metabolism);
+            self.g_repro.push(ph.repro);
+            self.g_habitat.push(ph.habitat);
+            self.g_diet.push(ph.diet);
+            self.cr.push(ph.r);
+            self.cg.push(ph.g);
+            self.cb.push(ph.b);
             self.carnivory.push(0.0);
             self.brains.push(s.brain);
+            self.genomes.push(s.genome);
             self.alive.len() - 1
         };
         self.count += 1;
@@ -157,17 +134,9 @@ impl Organisms {
         }
     }
 
+    /// The parent's raw genome, cloned to seed a child (which then mutates + develops it).
     #[inline]
     pub fn genome_at(&self, i: usize) -> Genome {
-        Genome {
-            size: self.g_size[i],
-            metabolism: self.g_metab[i],
-            repro: self.g_repro[i],
-            habitat: self.g_habitat[i],
-            diet: self.g_diet[i],
-            r: self.cr[i],
-            g: self.cg[i],
-            b: self.cb[i],
-        }
+        self.genomes[i].clone()
     }
 }

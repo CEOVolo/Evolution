@@ -6,7 +6,7 @@
 
 use crate::math::Scalar;
 
-pub const PARAMS_SCHEMA_VERSION: u16 = 7;
+pub const PARAMS_SCHEMA_VERSION: u16 = 8;
 
 /// Addressable parameters for the `SetParam` command. Values arrive as raw integers (never
 /// host-computed floats) and are interpreted per key.
@@ -110,6 +110,12 @@ pub struct WorldParams {
     pub add_conn_prob: Scalar,
     /// Per-birth probability of adding (splitting in) a brain node.
     pub add_node_prob: Scalar,
+    /// Per-birth probability of duplicating a gene (the open genome's novelty reservoir).
+    pub gene_dup_prob: Scalar,
+    /// Per-birth probability of deleting a gene.
+    pub gene_del_prob: Scalar,
+    /// Per-birth probability of adding a fresh random gene.
+    pub gene_add_prob: Scalar,
 
     // initial conditions / limits
     pub initial_population: u32,
@@ -173,6 +179,9 @@ impl Default for WorldParams {
             weight_mut_delta: 0.35,
             add_conn_prob: 0.06,
             add_node_prob: 0.02,
+            gene_dup_prob: 0.03,
+            gene_del_prob: 0.02,
+            gene_add_prob: 0.02,
 
             initial_population: 300,
             initial_energy: 250,

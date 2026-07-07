@@ -14,8 +14,9 @@ use crate::brain::{self, Brain, OUT_AX, OUT_AY};
 use crate::command::{Command, CommandKind};
 use crate::environment::SpatialHash;
 use crate::event::{DeathCause, Event, EventBatch};
+use crate::genome::{GeneKind, Genome};
 use crate::math::{canonical_bits, clamp_abs, wrap, Scalar};
-use crate::organism::{Genome, NewOrganism, Organisms};
+use crate::organism::{NewOrganism, Organisms};
 use crate::params::WorldParams;
 use crate::rng::{splitmix64, subsystem, Pcg32};
 
@@ -92,16 +93,7 @@ impl World {
         for _ in 0..w.params.initial_population {
             let px = rng.next_f32_unit() * w.params.width;
             let py = rng.next_f32_unit() * w.params.height;
-            let genome = Genome {
-                size: 0.6 + rng.next_f32_unit() * 1.0,
-                metabolism: 0.6 + rng.next_f32_unit() * 0.8,
-                repro: 0.6 + rng.next_f32_unit() * 0.8,
-                habitat: rng.next_f32_unit(),
-                diet: rng.next_f32_unit(),
-                r: rng.below(256) as u8,
-                g: rng.below(256) as u8,
-                b: rng.below(256) as u8,
-            };
+            let genome = Genome::founder(&mut rng);
             let brain = Brain::random_minimal(&mut rng);
             w.orgs.insert(NewOrganism {
                 px,
@@ -297,19 +289,23 @@ impl World {
             let key = splitmix64(b.parent_id as u64)
                 ^ splitmix64(tick.wrapping_mul(0x0100_0000_01b3))
                 ^ splitmix64(seq as u64);
-            let mut rng = Pcg32::from_key(self.seed, subsystem::MUTATION, key);
-            let genome = mutate_genome(b.parent_genome, &mut rng, &self.params);
+            // Separate streams for genome and brain, so adding gene draws (M2) never perturbs
+            // brain evolution.
+            let mut grng = Pcg32::from_key(self.seed, subsystem::GENOME, key);
+            let mut brng = Pcg32::from_key(self.seed, subsystem::MUTATION, key);
+            let mut genome = b.parent_genome;
+            genome.mutate(&mut grng, &self.params);
             let mut brain = b.parent_brain;
             brain.mutate(
-                &mut rng,
+                &mut brng,
                 self.params.mutation_rate,
                 self.params.weight_mut_delta,
                 self.params.add_conn_prob,
                 self.params.add_node_prob,
             );
             brain.reset_state();
-            let dx = rng.next_f32_signed() * self.params.spawn_radius;
-            let dy = rng.next_f32_signed() * self.params.spawn_radius;
+            let dx = brng.next_f32_signed() * self.params.spawn_radius;
+            let dy = brng.next_f32_signed() * self.params.spawn_radius;
             let px = wrap(b.px + dx, self.params.width);
             let py = wrap(b.py + dy, self.params.height);
             let (_, id) = self.orgs.insert(NewOrganism {
@@ -553,16 +549,7 @@ impl World {
                     ^ splitmix64(self.orgs.next_id as u64)
                     ^ splitmix64((((*cx as i64) << 20) ^ *cy as i64) as u64);
                 let mut rng = Pcg32::from_key(self.seed, subsystem::SPAWN, key);
-                let genome = Genome {
-                    size: 0.6 + rng.next_f32_unit() * 1.0,
-                    metabolism: 0.6 + rng.next_f32_unit() * 0.8,
-                    repro: 0.6 + rng.next_f32_unit() * 0.8,
-                    habitat: rng.next_f32_unit(),
-                    diet: rng.next_f32_unit(),
-                    r: rng.below(256) as u8,
-                    g: rng.below(256) as u8,
-                    b: rng.below(256) as u8,
-                };
+                let genome = Genome::founder(&mut rng);
                 let brain = Brain::random_minimal(&mut rng);
                 self.orgs.insert(NewOrganism {
                     px,
@@ -674,6 +661,14 @@ impl World {
             for &x in &br.act {
                 h.u32(canonical_bits(x));
             }
+            // The raw genome is authoritative state: distinct gene lists can share a phenotype
+            // yet mutate differently, so hash the genes themselves (id + kind), in list order.
+            let gm = &o.genomes[i];
+            h.u32(gm.genes.len() as u32);
+            for gene in &gm.genes {
+                h.u64(gene.id);
+                hash_gene_kind(&mut h, gene.kind);
+            }
         }
         h.finish()
     }
@@ -778,40 +773,34 @@ fn make_elevation(seed: u64, p: &WorldParams) -> Vec<Scalar> {
     e
 }
 
-fn mutate_genome(mut g: Genome, rng: &mut Pcg32, p: &WorldParams) -> Genome {
-    let rate = p.mutation_rate;
-    let d = p.mutation_delta;
-    if rng.chance(rate) {
-        g.size = (g.size + rng.next_f32_signed() * d).clamp(0.4, 2.2);
+/// Hash a gene's kind (tag + payload) into the state fingerprint, canonical little-endian.
+fn hash_gene_kind(h: &mut Fnv, k: GeneKind) {
+    match k {
+        GeneKind::TraitMod { channel, amount } => {
+            h.u8(0);
+            h.u8(channel);
+            h.i16(amount);
+        }
+        GeneKind::Junk { payload } => {
+            h.u8(1);
+            h.u32(payload);
+        }
+        GeneKind::Emit { channel, rate } => {
+            h.u8(2);
+            h.u8(channel);
+            h.i16(rate);
+        }
+        GeneKind::Sense { channel, gain } => {
+            h.u8(3);
+            h.u8(channel);
+            h.i16(gain);
+        }
+        GeneKind::React { param, threshold } => {
+            h.u8(4);
+            h.u16(param);
+            h.i16(threshold);
+        }
     }
-    if rng.chance(rate) {
-        g.metabolism = (g.metabolism + rng.next_f32_signed() * d).clamp(0.3, 2.0);
-    }
-    if rng.chance(rate) {
-        g.repro = (g.repro + rng.next_f32_signed() * d).clamp(0.5, 1.5);
-    }
-    if rng.chance(rate) {
-        g.habitat = (g.habitat + rng.next_f32_signed() * d).clamp(0.0, 1.0);
-    }
-    if rng.chance(rate) {
-        g.diet = (g.diet + rng.next_f32_signed() * d).clamp(0.0, 1.0);
-    }
-    if rng.chance(rate) {
-        g.r = mut_u8(g.r, rng);
-    }
-    if rng.chance(rate) {
-        g.g = mut_u8(g.g, rng);
-    }
-    if rng.chance(rate) {
-        g.b = mut_u8(g.b, rng);
-    }
-    g
-}
-
-#[inline]
-fn mut_u8(v: u8, rng: &mut Pcg32) -> u8 {
-    let delta = rng.below(21) as i32 - 10;
-    (v as i32 + delta).clamp(0, 255) as u8
 }
 
 struct Fnv(u64);
@@ -825,6 +814,18 @@ impl Fnv {
     fn u8(&mut self, b: u8) {
         self.0 ^= b as u64;
         self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    #[inline]
+    fn u16(&mut self, v: u16) {
+        for b in v.to_le_bytes() {
+            self.u8(b);
+        }
+    }
+    #[inline]
+    fn i16(&mut self, v: i16) {
+        for b in v.to_le_bytes() {
+            self.u8(b);
+        }
     }
     #[inline]
     fn u32(&mut self, v: u32) {
