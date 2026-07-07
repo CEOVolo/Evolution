@@ -307,12 +307,17 @@ impl Sim {
     }
 
     /// Active bonds as endpoint pairs `[ax, ay, bx, by, ...]` in world coordinates — the links
-    /// that make bodies visible. Bonds are pruned to valid endpoints each tick, so all are live.
+    /// that make bodies visible. Bonds are pruned in the spring phase, but a partner can still die
+    /// (or have its slot recycled) *later in the same tick*, so we re-validate `(slot,id)` here to
+    /// avoid drawing a stray link to a recycled cell until the next tick prunes it.
     pub fn bonds(&self) -> Vec<f32> {
         let o = &self.world.orgs;
         let mut v = Vec::with_capacity(self.world.bonds.len() * 4);
         for b in &self.world.bonds {
             let (a, c) = (b.sa as usize, b.sb as usize);
+            if !(o.alive[a] && o.id[a] == b.ida && o.alive[c] && o.id[c] == b.idb) {
+                continue;
+            }
             v.push(o.px[a]);
             v.push(o.py[a]);
             v.push(o.px[c]);
@@ -354,7 +359,14 @@ impl Sim {
             }
             x
         }
+        let o = &self.world.orgs;
         for b in &self.world.bonds {
+            // only union bonds whose endpoints are still the same live cells (a partner may have
+            // died and had its slot recycled later in the tick, before the next prune)
+            let (sa, sb) = (b.sa as usize, b.sb as usize);
+            if !(o.alive[sa] && o.id[sa] == b.ida && o.alive[sb] && o.id[sb] == b.idb) {
+                continue;
+            }
             let (a, c) = (find(&mut parent, b.sa), find(&mut parent, b.sb));
             if a != c {
                 parent[a as usize] = c;

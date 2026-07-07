@@ -252,7 +252,14 @@ fn max_body(w: &World) -> u32 {
         }
         x
     }
+    let o = &w.orgs;
     for b in &w.bonds {
+        // only count bonds whose endpoints are still the same live cells (a partner may have died
+        // and had its slot recycled later in the tick, before the next prune re-validates)
+        let (sa, sb) = (b.sa as usize, b.sb as usize);
+        if !(o.alive[sa] && o.id[sa] == b.ida && o.alive[sb] && o.id[sb] == b.idb) {
+            continue;
+        }
         let (a, c) = (find(&mut parent, b.sa), find(&mut parent, b.sb));
         if a != c {
             parent[a as usize] = c;
