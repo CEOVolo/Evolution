@@ -1,5 +1,6 @@
-// Canvas prototype over the deterministic sim-core (wasm), with a zoomable/pannable camera
-// and follow mode — so you can watch individual cells interact, not just a global blur.
+// Canvas viewer over the deterministic sim-core (wasm). The unit of life is a multicellular
+// organism: a body of cells grown from one genome. We render each body as a cohesive membraned
+// blob of rounded, role-coloured cells — not squares.
 
 import init, { Sim } from "../pkg/evolution.js";
 
@@ -16,6 +17,7 @@ async function main() {
 
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
+  const $ = (id) => document.getElementById(id);
 
   const fieldCanvas = document.createElement("canvas");
   fieldCanvas.width = gridW;
@@ -23,11 +25,9 @@ async function main() {
   const fctx = fieldCanvas.getContext("2d");
   const fimg = fctx.createImageData(gridW, gridH);
 
-  const $ = (id) => document.getElementById(id);
-
   // --- camera ---
-  // The canvas is the full-viewport hero; size it to its box and fit the (square) world inside.
   let baseScale = 1;
+  const cam = { x: worldW / 2, y: worldH / 2, zoom: 1 };
   function resize() {
     const r = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(r.width));
@@ -36,43 +36,33 @@ async function main() {
   }
   window.addEventListener("resize", resize);
   resize();
-  const cam = { x: worldW / 2, y: worldH / 2, zoom: 1 };
-  let followId = null;
 
-  function canvasCoords(e) {
+  const scale = () => baseScale * cam.zoom;
+  function screenToWorld(mx, my) {
+    const s = scale();
+    return { x: (mx - canvas.width / 2) / s + cam.x, y: (my - canvas.height / 2) / s + cam.y };
+  }
+  function mouseXY(e) {
     const r = canvas.getBoundingClientRect();
     return [
       (e.clientX - r.left) * (canvas.width / r.width),
       (e.clientY - r.top) * (canvas.height / r.height),
     ];
   }
-  function screenToWorld(mx, my) {
-    const s = baseScale * cam.zoom;
-    return { x: (mx - canvas.width / 2) / s + cam.x, y: (my - canvas.height / 2) / s + cam.y };
-  }
   function resetView() {
     cam.x = worldW / 2;
     cam.y = worldH / 2;
     cam.zoom = 1;
-    unfollow();
   }
-  function unfollow() {
-    followId = null;
-  }
-  function followById(id) {
-    followId = id | 0;
-    if (cam.zoom < 4) cam.zoom = 8;
-    toast("👁 Следим за клеткой #" + followId + " — 2×клик, чтобы отпустить");
-  }
+
+  // --- state ---
+  let playing = true;
+  let speed = 2;
+  let brush = "observe";
+  let colorBy = "role";
+  let followId = null;
 
   // --- controls ---
-  let playing = true;
-  let speed = 4;
-  let brush = "observe";
-  let layer = "nature"; // background map layer
-  let colorBy = "lineage"; // how organisms are coloured
-  let predatorsAnnounced = false;
-
   const playBtn = $("play");
   playBtn.onclick = () => {
     playing = !playing;
@@ -81,67 +71,41 @@ async function main() {
   };
   $("reset").onclick = () => {
     sim.reset((Math.random() * 0xffffffff) >>> 0);
-    popHist.length = 0;
-    predatorsAnnounced = false;
+    followId = null;
     resetView();
-    toast("🌍 Новый мир засеян");
+    toast("🌍 Новый мир");
   };
   $("speed").oninput = (e) => (speed = +e.target.value);
   $("brush").onchange = (e) => (brush = e.target.value);
-  $("layer").onchange = (e) => {
-    layer = e.target.value;
-    updateLegend();
-  };
   $("colorby").onchange = (e) => {
     colorBy = e.target.value;
-    updateLegend();
+    updateColorLegend();
+  };
+  $("gear").onclick = () => $("settings").classList.toggle("hidden");
+  $("drawer-toggle").onclick = () => {
+    const d = $("drawer");
+    d.classList.toggle("collapsed");
+    $("drawer-toggle").textContent = d.classList.contains("collapsed") ? "Данные ▸" : "Данные ◂";
   };
   $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
-  $("habcost").oninput = (e) => sim.set_habitat_cost(+e.target.value);
+  $("bite").oninput = (e) => sim.set_bite_amount(+e.target.value);
   $("bloomrate").oninput = (e) => sim.set_bloom_rate(+e.target.value);
-  $("bondstiff").oninput = (e) => sim.set_bond_stiffness(+e.target.value);
-  $("gear").onclick = () => $("settings").classList.toggle("hidden");
-  $("drawer-toggle").onclick = () => {
-    const collapsed = $("drawer").classList.toggle("collapsed");
-    $("drawer-toggle").textContent = collapsed ? "Данные ▸" : "Данные ◂";
-  };
-  $("species").addEventListener("click", (e) => {
-    const row = e.target.closest("[data-bkt]");
-    if (!row) return;
-    const b = +row.dataset.bkt;
-    selectedSpecies = selectedSpecies === b ? null : b;
-    updateSpecies();
-  });
-  $("records").addEventListener("click", (e) => {
-    const row = e.target.closest("[data-follow]");
-    if (row) followById(+row.dataset.follow);
-  });
 
+  // presets
   const presetSel = $("preset");
-  for (let id = 0; id < Sim.preset_count(); id++) {
+  for (let i = 0; i < Sim.preset_count(); i++) {
     const o = document.createElement("option");
-    o.value = id;
-    o.textContent = Sim.preset_name(id);
+    o.value = i;
+    o.textContent = Sim.preset_name(i);
     presetSel.appendChild(o);
   }
-  // add one background-layer option per chemical substance
-  const N_CHAN = Sim.n_chan();
-  const layerSel = $("layer");
-  for (let k = 0; k < N_CHAN; k++) {
-    const o = document.createElement("option");
-    o.value = "chan" + k;
-    o.textContent = "🧪 вещество " + k;
-    layerSel.appendChild(o);
-  }
   presetSel.onchange = (e) => {
-    const id = +e.target.value;
-    sim.load_preset(id, (Math.random() * 0xffffffff) >>> 0);
-    popHist.length = 0;
-    predatorsAnnounced = false;
+    sim.load_preset(+e.target.value, (Math.random() * 0xffffffff) >>> 0);
+    followId = null;
     resetView();
-    toast("🌍 Пресет: " + Sim.preset_name(id));
+    toast("🌍 Пресет: " + Sim.preset_name(+e.target.value));
   };
 
   function applyBrush(mx, my) {
@@ -150,561 +114,368 @@ async function main() {
     const cy = Math.floor(w.y / cellH);
     if (brush === "food") sim.inject(cx, cy, 3, 900);
     else if (brush === "bloom") sim.bloom(cx, cy);
-    else if (brush === "spawn") for (let k = 0; k < 6; k++) sim.spawn(cx, cy, 350);
+    else if (brush === "spawn") for (let k = 0; k < 4; k++) sim.spawn(cx, cy, 350);
     else if (brush === "kill") sim.kill(cx - 3, cy - 3, cx + 3, cy + 3);
   }
 
-  // --- mouse: zoom / pan / follow / paint ---
-  let dragging = false;
-  let downX = 0;
-  let downY = 0;
-  let moved = false;
-  let panStart = null;
-
+  // --- mouse ---
+  let dragging = false,
+    moved = false,
+    lastX = 0,
+    lastY = 0;
   canvas.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
-      const [mx, my] = canvasCoords(e);
+      const [mx, my] = mouseXY(e);
       const before = screenToWorld(mx, my);
-      cam.zoom = Math.max(1, Math.min(40, cam.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      cam.zoom = Math.min(20, Math.max(0.5, cam.zoom * (e.deltaY < 0 ? 1.12 : 0.89)));
       const after = screenToWorld(mx, my);
       cam.x += before.x - after.x;
       cam.y += before.y - after.y;
     },
     { passive: false }
   );
-
   canvas.addEventListener("mousedown", (e) => {
-    $("settings").classList.add("hidden");
-    const [mx, my] = canvasCoords(e);
+    const [mx, my] = mouseXY(e);
     dragging = true;
     moved = false;
-    downX = mx;
-    downY = my;
-    panStart = { x: cam.x, y: cam.y };
+    lastX = mx;
+    lastY = my;
     if (brush !== "observe") applyBrush(mx, my);
   });
   canvas.addEventListener("mousemove", (e) => {
-    const [mx, my] = canvasCoords(e);
+    const [mx, my] = mouseXY(e);
     if (dragging) {
-      if (Math.abs(mx - downX) + Math.abs(my - downY) > 3) moved = true;
+      const dx = mx - lastX,
+        dy = my - lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
       if (brush === "observe") {
-        const s = baseScale * cam.zoom;
-        cam.x = panStart.x - (mx - downX) / s;
-        cam.y = panStart.y - (my - downY) / s;
-      } else {
-        applyBrush(mx, my);
-      }
+        cam.x -= dx / scale();
+        cam.y -= dy / scale();
+      } else applyBrush(mx, my);
+      lastX = mx;
+      lastY = my;
     } else if (brush === "observe" && followId === null) {
       inspectHover(mx, my);
     }
   });
   window.addEventListener("mouseup", () => {
     if (dragging && brush === "observe" && !moved) {
-      const w = screenToWorld(downX, downY);
-      const n = sim.nearest(w.x, w.y);
-      if (n.length) followById(n[10]);
+      const w = screenToWorld(lastX, lastY);
+      const info = sim.nearest(w.x, w.y);
+      if (info.length) {
+        followId = info[2] | 0;
+        toast("🔎 Следим за организмом #" + followId);
+      }
     }
     dragging = false;
   });
-  canvas.addEventListener("dblclick", resetView);
+  canvas.addEventListener("dblclick", () => {
+    followId = null;
+    resetView();
+  });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // --- inspector ---
-  const inspectBody = $("inspect-body");
-  let lastInspect = 0;
-  function cellCard(px, py, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds, tag) {
-    const pred = carn > 0.12 ? "🔴 хищник" : "🌿 травоядное";
-    const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
-    const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
-    const chem =
-      emit + uptake + resist + sense > 0
-        ? `выд ${emit | 0} · погл ${uptake | 0} · уст ${resist | 0} · чувств ${sense | 0}`
-        : "—";
-    const body =
-      (bonds | 0) > 0
-        ? `🧫 в теле · ${bonds | 0} связ. · клейкость ${(+adhesion).toFixed(2)}`
-        : `одиночка · клейкость ${(+adhesion).toFixed(2)}`;
-    return `
-      <div class="row" style="margin:0 0 8px">
-        <span><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span> клетка #${id | 0}${tag}</span>
-        <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
-      </div>
-      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${pred}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>питание (ген)</span><b>${food} ${diet.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>среда (ген)</span><b>${env} ${habitat.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>энергия</span><b>${energy | 0}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>ген «размер»</span><b>${size.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>ген «обмен»</span><b>${metab.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>ген «размножение»</span><b>${repro.toFixed(2)}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>геном 🧬</span><b>${genes | 0} генов</b></div>
-      <div class="row mono" style="margin:4px 0"><span>химия 🧪</span><b>${chem}</b></div>
-      <div class="row mono" style="margin:4px 0"><span>тело 🧫</span><b>${body}</b></div>`;
-  }
-  function inspectHover(mx, my) {
-    const now = performance.now();
-    if (now - lastInspect < 70) return;
-    lastInspect = now;
-    const w = screenToWorld(mx, my);
-    const n = sim.nearest(w.x, w.y);
-    if (!n.length) {
-      inspectBody.innerHTML = '<div class="empty">Здесь пусто.</div>';
-      return;
-    }
-    const [, , energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds] = n;
-    inspectBody.innerHTML = cellCard(0, 0, energy, age, size, metab, repro, r, g, b, id, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds, "");
-  }
-
-  // --- population chart + trait bars ---
-  const chart = $("chart");
-  const cctx = chart.getContext("2d");
-  const popHist = [];
-  const POP_MAX = 272;
-  function drawChart() {
-    cctx.clearRect(0, 0, chart.width, chart.height);
-    if (popHist.length < 2) return;
-    const max = Math.max(...popHist, 1);
-    cctx.beginPath();
-    for (let i = 0; i < popHist.length; i++) {
-      const x = (i / (POP_MAX - 1)) * chart.width;
-      const y = chart.height - (popHist[i] / max) * (chart.height - 4) - 2;
-      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
-    }
-    cctx.strokeStyle = "#6ee7a0";
-    cctx.lineWidth = 1.5;
-    cctx.stroke();
-    cctx.fillStyle = "#8299836b";
-    cctx.font = "10px ui-monospace, monospace";
-    cctx.fillText("макс " + max.toLocaleString(), 4, 11);
-  }
-  const bar = (id, frac) => {
-    $("b-" + id).style.width = Math.max(0, Math.min(1, frac)) * 100 + "%";
-  };
-  function updateTraits() {
-    const [size, metab, repro, carn] = sim.avg_traits();
-    $("a-size").textContent = size.toFixed(3);
-    $("a-metab").textContent = metab.toFixed(3);
-    $("a-repro").textContent = repro.toFixed(3);
-    $("a-carn").textContent = carn.toFixed(3);
-    bar("size", (size - 0.4) / 1.8);
-    bar("metab", (metab - 0.3) / 1.7);
-    bar("repro", (repro - 0.5) / 1.0);
-    bar("carn", carn);
-  }
-  function updateHealth() {
-    const carn = sim.frac_carnivore();
-    $("a-troph").textContent = Math.round(carn * 100) + "%";
-    bar("troph", carn);
-    const div = sim.diversity();
-    $("a-div").textContent = div.toFixed(2);
-    bar("div", div / 4.16);
-    const spd = sim.avg_speed();
-    $("a-move").textContent = spd.toFixed(2);
-    bar("move", spd / 2.5);
-    const dc = sim.deaths_recent();
-    $("deaths").innerHTML = `🍽 ${dc[0]} · ⏳ ${dc[1]} · 🔴 ${dc[3]} · ☠ ${dc[2]}`;
-    const hh = sim.habitat_hist();
-    $("habitat").innerHTML = `🌊 ${hh[0].toLocaleString()} · 🏖 ${hh[1].toLocaleString()} · ⛰ ${hh[2].toLocaleString()}`;
-    const dh = sim.diet_hist();
-    $("diet").innerHTML = `🟢 ${dh[0].toLocaleString()} · 🍽 ${dh[1].toLocaleString()} · 🟠 ${dh[2].toLocaleString()}`;
-  }
-  let selectedSpecies = null;
-  function speciesDetail(s) {
-    const env = s.hab < 0.4 ? "🌊 водные" : s.hab > 0.6 ? "⛰ сухопутные" : "🏖 береговые";
-    const carnPct = Math.round(s.carn * 100);
-    const diet = s.carn > 0.12 ? "🔴 хищники" : "🌿 травоядные";
-    const food = s.diet < 0.35 ? "🟢 еда A" : s.diet > 0.65 ? "🟠 еда B" : "🍽 всеядные";
-    return `<div class="detail">
-      <div>в среднем <b>${env}</b> · ген «среда» ${s.hab.toFixed(2)}</div>
-      <div>где живут: 🌊 <b>${s.water.toLocaleString()}</b> · 🏖 <b>${s.shore.toLocaleString()}</b> · ⛰ <b>${s.land.toLocaleString()}</b></div>
-      <div>рацион: <b>${diet}</b> · хищность ${carnPct}%</div>
-      <div>питание: <b>${food}</b> (ген ${s.diet.toFixed(2)})</div>
-      <div>размер <b>${s.size.toFixed(2)}</b> · мозг 🧠<b>${s.brain}</b> · энергия ~<b>${(+s.energy).toLocaleString()}</b> · всего <b>${s.count.toLocaleString()}</b></div>
-    </div>`;
-  }
-  function updateSpecies() {
-    $("a-brain").textContent = sim.avg_brain_complexity().toFixed(1);
-    $("a-genes").textContent = sim.avg_genome_len().toFixed(1);
-    let list;
-    try {
-      list = JSON.parse(sim.species_json());
-    } catch {
-      return;
-    }
-    $("species").innerHTML = list
-      .map((s) => {
-        const on = s.bkt === selectedSpecies ? " on" : "";
-        const row =
-          `<div class="row clk${on}" data-bkt="${s.bkt}" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${s.r},${s.g},${s.b})"></span> ${s.name}</span>` +
-          `<span class="mono" style="color:var(--muted2)">${s.count.toLocaleString()} · 🔴${Math.round(s.carn * 100)}% · 🧠${s.brain}</span></div>`;
-        return row + (s.bkt === selectedSpecies ? speciesDetail(s) : "");
-      })
-      .join("");
-  }
-  function updateChem() {
-    let counts;
-    try {
-      counts = sim.channel_role_counts();
-    } catch {
-      return;
-    }
-    const nchan = counts.length / 4;
-    let html = "";
-    for (let k = 0; k < nchan; k++) {
-      const em = counts[k * 4],
-        up = counts[k * 4 + 1],
-        re = counts[k * 4 + 2],
-        se = counts[k * 4 + 3];
-      if (em + up + re + se === 0) continue;
-      // flag emergent relationships (never labelled in the engine — inferred from measured genes)
-      let tag = "";
-      if (em > 0 && up > 0) tag = ' <span style="color:var(--accent)">↺ кросс-фидинг</span>';
-      else if (em > 0 && re > 0) tag = ' <span style="color:#e7c76e">☠ детокс/война</span>';
-      html +=
-        `<div class="row" style="margin:0"><span>в-во ${k}${tag}</span>` +
-        `<span class="mono" style="color:var(--muted2)">выд ${em} · погл ${up} · уст ${re} · чув ${se}</span></div>`;
-    }
-    $("chem").innerHTML =
-      html || '<span style="color:var(--muted2)">химию пока никто не освоил</span>';
-  }
-  function updateRecords() {
-    let list;
-    try {
-      list = JSON.parse(sim.records());
-    } catch {
-      return;
-    }
-    $("records").innerHTML = list
-      .map(
-        (r) =>
-          `<div class="row clk" data-follow="${r.id}" style="margin:0"><span><span class="swatch" style="width:12px;height:12px;background:rgb(${r.r},${r.g},${r.b})"></span> ${r.cat}</span>` +
-          `<span class="mono" style="color:var(--muted2)">${r.env} ${r.val} · #${r.id}</span></div>`
-      )
-      .join("");
-  }
-
   // --- toasts ---
-  const toastsEl = $("toasts");
-  function toast(text) {
-    const dv = document.createElement("div");
-    dv.className = "toast";
-    dv.textContent = text;
-    toastsEl.appendChild(dv);
-    setTimeout(() => dv.classList.add("fade"), 3400);
-    setTimeout(() => dv.remove(), 4100);
-  }
-  let lastNarr = performance.now();
-  let lastNarrPop = sim.population();
-  function narrate() {
-    const now = performance.now();
-    if (now - lastNarr < 2500) return;
-    const pop = sim.population();
-    const carn = sim.avg_traits()[3];
-    const prev = lastNarrPop || 1;
-    const ratio = pop / prev;
-    if (!predatorsAnnounced && carn > 0.03 && pop > 50) {
-      toast("🦈 Сами собой появились хищники!");
-      predatorsAnnounced = true;
-    } else if (pop === 0 && lastNarrPop > 0) toast("💀 Мир вымер — жми «Новый мир» или подсыпь еды");
-    else if (ratio > 1.35) toast(`🌱 Вспышка размножения (+${(pop - prev).toLocaleString()})`);
-    else if (ratio < 0.7) toast(`💀 Массовое вымирание (−${(prev - pop).toLocaleString()})`);
-    lastNarr = now;
-    lastNarrPop = pop;
+  function toast(msg) {
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = msg;
+    $("toasts").appendChild(t);
+    setTimeout(() => t.classList.add("fade"), 1400);
+    setTimeout(() => t.remove(), 2100);
   }
 
-  // --- layers ---
-  const chanHues = [
-    [230, 70, 235],
-    [70, 220, 235],
-    [240, 160, 50],
-    [130, 235, 90],
-    [240, 90, 140],
-    [170, 130, 245],
-  ];
-  const curSubstance = () => (layer.startsWith("chan") ? +layer.slice(4) : 0);
-
-  function updateLegend() {
-    let t;
-    if (colorBy === "diet") t = "клетки: 🟢 еда A · 🟠 еда B · ⚪ всеядные · 🔴 хищник";
-    else if (colorBy === "habitat") t = "клетки: 🔵 водные · 🟦 берег · 🟫 сухопутные";
-    else if (colorBy === "chem")
-      t = `клетки по в-ву ${curSubstance()}: 🔴 выделяет · 🟢 поглощает · 🟡 и то и то · 🟣 устойчив · 🔵 чувствует`;
-    else t = "клетки: цвет их генов (род)";
-    $("layerlegend").innerHTML = t;
-  }
-
-  // Fill the offscreen field image according to the selected background layer.
+  // --- background field image ---
   function buildField() {
+    const f = sim.field();
+    const el = sim.elevation();
+    const wl = sim.water_level() * 255;
     const d = fimg.data;
-    const N = gridW * gridH;
-    if (layer.startsWith("chan")) {
-      const ch = sim.channel(curSubstance());
-      const [hr, hg, hb] = chanHues[curSubstance() % chanHues.length];
-      for (let i = 0, j = 0; i < N; i++, j += 4) {
-        const v = ch[i];
-        d[j] = 8 + (hr * v) / 255;
-        d[j + 1] = 10 + (hg * v) / 255;
-        d[j + 2] = 14 + (hb * v) / 255;
-        d[j + 3] = 255;
-      }
-      return;
-    }
-    if (layer === "foodA") {
-      const f = sim.field();
-      for (let i = 0, j = 0; i < N; i++, j += 4) {
-        d[j] = 8;
-        d[j + 1] = 14 + f[i] * 0.9;
-        d[j + 2] = 12;
-        d[j + 3] = 255;
-      }
-      return;
-    }
-    if (layer === "foodB") {
-      const fb = sim.field_b();
-      for (let i = 0, j = 0; i < N; i++, j += 4) {
-        d[j] = 15 + fb[i] * 0.85;
-        d[j + 1] = 12 + fb[i] * 0.5;
-        d[j + 2] = 8;
-        d[j + 3] = 255;
-      }
-      return;
-    }
-    if (layer === "relief") {
-      const el = sim.elevation();
-      const wc = sim.water_level() * 255;
-      for (let i = 0, j = 0; i < N; i++, j += 4) {
-        const e = el[i];
-        if (e < wc) {
-          const depth = (wc - e) / (wc || 1);
-          d[j] = 10;
-          d[j + 1] = 30 + (1 - depth) * 28;
-          d[j + 2] = 70 + depth * 150;
-        } else {
-          const h = (e - wc) / ((255 - wc) || 1);
-          d[j] = 55 + h * 120;
-          d[j + 1] = 65 + h * 105;
-          d[j + 2] = 38 + h * 60;
-        }
-        d[j + 3] = 255;
-      }
-      return;
-    }
-    // "nature": the natural blend
-    const f = sim.field(),
-      fb = sim.field_b(),
-      sg = sim.signal(),
-      dt = sim.detritus(),
-      tr = sim.terrain(),
-      el = sim.elevation();
-    const waterCut = sim.water_level() * 255;
-    for (let i = 0, j = 0; i < N; i++, j += 4) {
-      const v = f[i],
-        b2 = fb[i],
-        sv = sg[i],
-        de = dt[i];
-      if (el[i] < waterCut) {
-        const depth = (waterCut - el[i]) / (waterCut || 1);
-        d[j] = 12 + sv * 0.1 + b2 * 0.16;
-        d[j + 1] = 42 + v * 0.3 + b2 * 0.12 + (1 - depth) * 22 - depth * 12 + de * 0.2;
-        d[j + 2] = 70 + depth * 120 + sv * 0.55;
+    for (let i = 0; i < f.length; i++) {
+      const water = el[i] < wl;
+      const fo = f[i];
+      let r, g, b;
+      if (water) {
+        r = 18;
+        g = 34;
+        b = 58;
       } else {
-        const barren = 255 - tr[i];
-        d[j] = 10 + barren * 0.14 + sv * 0.12 + de * 0.85 + b2 * 0.5;
-        d[j + 1] = 20 + tr[i] * 0.05 + v * 0.62 + de * 0.2 + b2 * 0.32;
-        d[j + 2] = 18 + barren * 0.05 + sv * 0.7;
+        r = 12;
+        g = 17;
+        b = 12;
       }
-      d[j + 3] = 255;
+      g = Math.min(255, g + fo * 0.5);
+      r = Math.min(255, r + fo * 0.05);
+      const k = i * 4;
+      d[k] = r;
+      d[k + 1] = g;
+      d[k + 2] = b;
+      d[k + 3] = 255;
+    }
+    fctx.putImageData(fimg, 0, 0);
+  }
+
+  // --- colour of a cell by role ---
+  function roleColor(feed01, struct01) {
+    // feeder -> green, structural -> slate-blue, low both -> muted grey-green
+    const r = Math.round(70 + struct01 * 80);
+    const g = Math.round(95 + feed01 * 140 - struct01 * 25);
+    const b = Math.round(75 + struct01 * 110);
+    return `rgb(${Math.min(255, r)},${Math.min(255, g)},${Math.min(255, b)})`;
+  }
+
+  function updateColorLegend() {
+    const el = $("colorlegend");
+    if (colorBy === "role") {
+      el.innerHTML =
+        '<span><span class="sw" style="background:rgb(90,235,110)"></span>зелёные — кормовые клетки</span>' +
+        '<span><span class="sw" style="background:rgb(150,120,185)"></span>сланцевые — структурные/защитные</span>' +
+        '<span><span class="sw" style="background:rgb(120,140,120)"></span>серо-зелёные — неспециализированные</span>';
+    } else if (colorBy === "diet") {
+      el.innerHTML =
+        '<span><span class="sw" style="background:#4bd66b"></span>🟢 еда A · <span class="sw" style="background:#e0a030"></span>🟠 еда B · <span class="sw" style="background:#8a9a8a"></span>всеядные</span>';
+    } else if (colorBy === "habitat") {
+      el.innerHTML =
+        '<span><span class="sw" style="background:#3f7fd0"></span>водные · <span class="sw" style="background:#4bb0a0"></span>берег · <span class="sw" style="background:#b98a4a"></span>сухопутные</span>';
+    } else {
+      el.innerHTML =
+        '<span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — гены рода организма</span>';
     }
   }
 
-  // --- render ---
-  const tickEl = $("s-tick");
-  const popEl = $("s-pop");
-  let frame = 0;
-
+  // --- draw ---
   function draw() {
-    buildField();
-    fctx.putImageData(fimg, 0, 0);
-
-    const W = canvas.width;
-    const H = canvas.height;
-    const s = baseScale * cam.zoom;
+    const W = canvas.width,
+      H = canvas.height;
+    const s = scale();
     const ox = W / 2 - cam.x * s;
     const oy = H / 2 - cam.y * s;
+    ctx.clearRect(0, 0, W, H);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#050705";
-    ctx.fillRect(0, 0, W, H);
+    // background food/water field
+    buildField();
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(fieldCanvas, ox, oy, worldW * s, worldH * s);
+    ctx.imageSmoothingEnabled = true;
 
-    // bonds (bodies) — links between cells that stay stuck together; drawn under the cells
-    const bo = sim.bonds();
-    if (bo.length) {
-      ctx.strokeStyle = "rgba(120,255,225,0.5)";
-      ctx.lineWidth = Math.max(1, 1.4 * s);
+    // bodies
+    const p = sim.cell_positions();
+    const sz = sim.cell_sizes();
+    const roles = colorBy === "role" ? sim.cell_roles() : null;
+    const cols = colorBy === "lineage" ? sim.cell_colors() : null;
+    const dietA = colorBy === "diet" ? sim.cell_diets() : null;
+    const habA = colorBy === "habitat" ? sim.cell_habitats() : null;
+    const n = p.length / 2;
+
+    // pass 1 — membrane: a soft disc under each cell; overlapping cells of a body merge into a blob
+    ctx.fillStyle = "rgba(140,190,150,0.13)";
+    for (let m = 0; m < n; m++) {
+      const x = ox + p[m * 2] * s;
+      const y = oy + p[m * 2 + 1] * s;
+      if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+      const rad = (1.4 + sz[m] * 1.3) * s;
       ctx.beginPath();
-      for (let i = 0; i < bo.length; i += 4) {
-        ctx.moveTo(ox + bo[i] * s, oy + bo[i + 1] * s);
-        ctx.lineTo(ox + bo[i + 2] * s, oy + bo[i + 3] * s);
-      }
-      ctx.stroke();
+      ctx.arc(x, y, rad * 1.35, 0, 6.283);
+      ctx.fill();
     }
 
-    // organisms
-    const p = sim.positions();
-    const sz = sim.sizes();
-    const cn = sim.carnivory();
-    const cCol = colorBy === "lineage" ? sim.colors() : null;
-    const dietsA = colorBy === "diet" ? sim.diets() : null;
-    const habA = colorBy === "habitat" ? sim.habitats() : null;
-    const chemA = colorBy === "chem" ? sim.chem_role_for(curSubstance()) : null;
-    const closeUp = cam.zoom > 2.5;
-    const vel = closeUp ? sim.velocities() : null;
-    for (let i = 0, k = 0, m = 0; i < p.length; i += 2, k += 3, m++) {
-      const x = ox + p[i] * s;
-      const y = oy + p[i + 1] * s;
-      if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
-      const rad = (1.2 + sz[m] * 1.4) * s * 0.8;
-      // red rim = currently hunting (only in the lineage view; other views encode meaning in colour)
-      if (colorBy === "lineage" && cn[m] > 30) {
-        ctx.fillStyle = "rgba(255,60,60,0.85)";
-        const rr = rad + (closeUp ? 2 : 1.2);
-        ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
-      }
-      let col;
-      if (cCol) col = `rgb(${cCol[k]},${cCol[k + 1]},${cCol[k + 2]})`;
-      else if (dietsA) {
-        if (cn[m] > 30) col = "#ff5a5a";
-        else {
-          const dv = dietsA[m];
-          col = dv < 100 ? "#4bd66b" : dv > 156 ? "#e0a030" : "#8a9a8a";
-        }
+    // pass 2 — cells: rounded, coloured by role or lineage
+    for (let m = 0; m < n; m++) {
+      const x = ox + p[m * 2] * s;
+      const y = oy + p[m * 2 + 1] * s;
+      if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+      const rad = (1.4 + sz[m] * 1.3) * s;
+      if (roles) ctx.fillStyle = roleColor(roles[m * 2] / 255, roles[m * 2 + 1] / 255);
+      else if (dietA) {
+        const d = dietA[m];
+        ctx.fillStyle = d < 100 ? "#4bd66b" : d > 156 ? "#e0a030" : "#8a9a8a";
       } else if (habA) {
-        const hv = habA[m];
-        col = hv < 100 ? "#3f7fd0" : hv > 156 ? "#b98a4a" : "#4bb0a0";
-      } else {
-        const rb = chemA[m];
-        col =
-          rb & 1 && rb & 2
-            ? "#f2e14a"
-            : rb & 1
-              ? "#ff5a5a"
-              : rb & 2
-                ? "#4bd66b"
-                : rb & 4
-                  ? "#b070e0"
-                  : rb & 8
-                    ? "#5aa8ff"
-                    : "#39463b";
-      }
-      ctx.fillStyle = col;
-      ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
-      if (vel) {
-        ctx.strokeStyle = "rgba(230,240,255,0.55)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + vel[i] * s * 5, y + vel[i + 1] * s * 5);
-        ctx.stroke();
-      }
+        const h = habA[m];
+        ctx.fillStyle = h < 100 ? "#3f7fd0" : h > 156 ? "#b98a4a" : "#4bb0a0";
+      } else ctx.fillStyle = `rgb(${cols[m * 3]},${cols[m * 3 + 1]},${cols[m * 3 + 2]})`;
+      ctx.beginPath();
+      ctx.arc(x, y, rad, 0, 6.283);
+      ctx.fill();
     }
 
-    // transient food-burst events — a soft green glow that fades as the event ages out
+    // transient food-burst events
     const bl = sim.blooms();
     for (let i = 0; i < bl.length; i += 4) {
-      const bx = ox + bl[i] * s;
-      const by = oy + bl[i + 1] * s;
-      const br = Math.max(2, bl[i + 2] * s);
-      const frac = bl[i + 3]; // 1 = fresh, →0 dying
+      const bx = ox + bl[i] * s,
+        by = oy + bl[i + 1] * s,
+        br = Math.max(2, bl[i + 2] * s),
+        frac = bl[i + 3];
       const grad = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-      grad.addColorStop(0, `rgba(130,235,140,${0.10 + 0.26 * frac})`);
+      grad.addColorStop(0, `rgba(130,235,140,${0.1 + 0.24 * frac})`);
       grad.addColorStop(1, "rgba(130,235,140,0)");
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(bx, by, br, 0, 6.283);
       ctx.fill();
-      ctx.strokeStyle = `rgba(180,255,190,${0.14 + 0.3 * frac})`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(bx, by, br, 0, 6.283);
-      ctx.stroke();
     }
 
-    // follow highlight (the followed cell is kept at screen centre)
+    // follow highlight
     if (followId !== null) {
-      ctx.strokeStyle = "rgba(120,230,255,0.9)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(W / 2, H / 2, Math.max(14, 4 * s), 0, 6.283);
-      ctx.stroke();
+      const info = sim.by_id(followId);
+      if (info.length) {
+        cam.x = info[0];
+        cam.y = info[1];
+        ctx.strokeStyle = "rgba(120,230,255,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(W / 2, H / 2, Math.max(16, 8 * s), 0, 6.283);
+        ctx.stroke();
+      }
     }
 
-    // night dimming (the day/night cycle, visible)
+    // night dimming
     const dl = sim.daylight();
-    if (dl < 1) {
-      ctx.fillStyle = `rgba(6,10,28,${(1 - dl) * 0.4})`;
+    if (dl < 0.5) {
+      ctx.fillStyle = `rgba(4,8,20,${(0.5 - dl) * 0.7})`;
       ctx.fillRect(0, 0, W, H);
     }
   }
 
+  // --- stats ---
+  const chart = $("chart");
+  const cctx = chart.getContext("2d");
+  const popHist = [];
+  const POP_MAX = 300;
+  function drawChart() {
+    cctx.clearRect(0, 0, chart.width, chart.height);
+    if (popHist.length < 2) return;
+    const mx = Math.max(...popHist, 10);
+    cctx.strokeStyle = "#6ee7a0";
+    cctx.lineWidth = 1.5;
+    cctx.beginPath();
+    for (let i = 0; i < popHist.length; i++) {
+      const x = (i / (POP_MAX - 1)) * chart.width;
+      const y = chart.height - (popHist[i] / mx) * (chart.height - 4) - 2;
+      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    }
+    cctx.stroke();
+  }
+
+  function pct(el, bar, v, max) {
+    $(el).textContent = v.toFixed(2);
+    if (bar) $(bar).style.width = Math.min(100, (v / max) * 100) + "%";
+  }
+
+  let frame = 0;
+  function updateStats() {
+    const pop = sim.population();
+    $("s-tick").textContent = sim.tick_count();
+    $("s-pop").textContent = pop;
+    $("a-day").textContent = sim.daylight() > 0.5 ? "☀ день" : "🌙 ночь";
+
+    popHist.push(pop);
+    if (popHist.length > POP_MAX) popHist.shift();
+    drawChart();
+
+    $("a-body").textContent = sim.avg_body().toFixed(1);
+    $("a-maxbody").textContent = sim.max_body();
+    pct("a-dol", "b-dol", sim.dol(), 1);
+    const diff = sim.diff_frac();
+    $("a-diff").textContent = (diff * 100).toFixed(0) + "%";
+    $("b-diff").style.width = diff * 100 + "%";
+    $("a-brain").textContent = sim.avg_brain().toFixed(1);
+    $("a-regnet").textContent = sim.avg_regnet().toFixed(1);
+    $("a-genes").textContent = sim.avg_genome_len().toFixed(1);
+    $("a-div").textContent = sim.diversity().toFixed(2);
+    $("a-move").textContent = sim.avg_speed().toFixed(2);
+
+    const dh = sim.diet_hist();
+    $("diet").textContent = `🟢 ${dh[0]} · всеяд ${dh[1]} · 🟠 ${dh[2]}`;
+    const hh = sim.habitat_hist();
+    $("habitat").textContent = `🌊 ${hh[0]} · 🏖 ${hh[1]} · ⛰ ${hh[2]}`;
+
+    const d = sim.deaths_recent();
+    $("deaths").textContent = `голод ${d[0]} · старость ${d[1]} · съедены ${d[3]} · стёрты ${d[2]}`;
+
+    updateSpecies();
+    if (followId !== null) updateFollow();
+  }
+
+  // --- inspector ---
+  function bodyCard(info, tag) {
+    const [, , id, energy, age, ncells, dol, feed, strc, brain, regnet, genes, diet, habitat] = info;
+    const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
+    const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
+    return `
+      <div class="row" style="margin:0 0 8px">
+        <span>организм #${id | 0}${tag}</span>
+        <span class="mono" style="color:var(--muted2)">возраст ${age | 0}</span>
+      </div>
+      <div class="row mono" style="margin:4px 0"><span>клеток в теле</span><b>🧫 ${ncells | 0}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>разделение труда</span><b>DOL ${(+dol).toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>роли (сред.)</span><b>🟢 корм ${(feed * 100).toFixed(0)}% · 🟦 защита ${(strc * 100).toFixed(0)}%</b></div>
+      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${food} ${(+diet).toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>среда</span><b>${env} ${(+habitat).toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>энергия (котёл)</span><b>${energy | 0}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>программа развития</span><b>${regnet | 0}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>геном</span><b>${genes | 0} генов</b></div>`;
+  }
+  let lastInspect = 0;
+  function inspectHover(mx, my) {
+    const now = performance.now();
+    if (now - lastInspect < 70) return;
+    lastInspect = now;
+    const w = screenToWorld(mx, my);
+    const info = sim.nearest(w.x, w.y);
+    $("inspect-body").innerHTML = info.length
+      ? bodyCard(info, "")
+      : '<div class="empty">Здесь пусто.</div>';
+  }
+  function updateSpecies() {
+    let arr;
+    try {
+      arr = JSON.parse(sim.species_json());
+    } catch {
+      return;
+    }
+    if (!arr.length) {
+      $("species").innerHTML = '<span style="color:var(--muted2)">—</span>';
+      return;
+    }
+    $("species").innerHTML = arr
+      .map(
+        (s) =>
+          `<div class="row" style="margin:0">
+             <span><span class="swatch" style="background:rgb(${s.r},${s.g},${s.b})"></span>${s.name}</span>
+             <span class="mono" style="color:var(--muted2)">${s.count} · 🧫${s.body.toFixed(1)} · 🧠${s.brain.toFixed(0)} · DOL ${s.dol.toFixed(2)}</span>
+           </div>`
+      )
+      .join("");
+  }
+
   function updateFollow() {
-    if (followId === null) return;
     const info = sim.by_id(followId);
     if (!info.length) {
-      toast("☠ Клетка #" + followId + " погибла");
+      toast("☠ Организм #" + followId + " погиб");
       followId = null;
       return;
     }
-    const [px, py, energy, age, size, metab, repro, r, g, b, carn, brain, habitat, diet, genes, emit, uptake, resist, sense, adhesion, bonds] = info;
-    cam.x = px;
-    cam.y = py;
-    inspectBody.innerHTML = cellCard(
-      px, py, energy, age, size, metab, repro, r, g, b, followId, carn, brain, habitat, diet, genes,
-      emit, uptake, resist, sense, adhesion, bonds,
+    $("inspect-body").innerHTML = bodyCard(
+      info,
       ' <span style="color:var(--accent)">· следим</span>'
     );
   }
 
+  // --- loop ---
   function loop() {
     if (playing) sim.tick(speed);
-    updateFollow();
     draw();
-    if ((frame & 3) === 0) {
-      popHist.push(sim.population());
-      if (popHist.length > POP_MAX) popHist.shift();
-      drawChart();
-    }
-    if ((frame & 7) === 0) {
-      tickEl.textContent = sim.tick_count().toLocaleString();
-      popEl.textContent = sim.population().toLocaleString();
-      const dl = sim.daylight();
-      $("a-day").textContent = (dl > 0.5 ? "☀️ " : "🌙 ") + dl.toFixed(2);
-      updateTraits();
-      updateHealth();
-      updateSpecies();
-      updateChem();
-      updateRecords();
-      narrate();
-    }
+    if (frame % 8 === 0) updateStats();
     frame++;
     requestAnimationFrame(loop);
   }
 
-  window.__evo = {
-    sim,
-    cam,
-    step: (n) => {
-      sim.tick(n);
-      draw();
-      updateTraits();
-    },
-  };
-
-  updateLegend();
-  toast("👋 Живой мир. Крути колесо, чтобы приблизиться, и кликни клетку — следить за ней.");
+  window.__evo = { sim, cam, step: (nn) => { sim.tick(nn); draw(); updateStats(); } };
+  updateColorLegend();
+  toast("🧫 Живые организмы. Крути колесо, кликни тело — следить.");
   loop();
 }
 

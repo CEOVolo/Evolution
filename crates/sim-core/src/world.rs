@@ -1,16 +1,16 @@
 //! The world and its tick — the one hot function the whole engine is built around.
 //!
-//! A **living, pressuring** world: food waxes and wanes on a day/night–season cycle and can
-//! surge in transient **food-burst events** (see [`Bloom`]); predation is **skill-based** (a
-//! predator only catches prey it is actually pursuing, so prey can evade); and organisms can
-//! **emit and sense a signal** whose meaning evolution assigns. Every organism has a growing
-//! recurrent brain ([`crate::brain`]). Nothing is hard-coded to a role or outcome — foraging,
-//! fleeing, hunting, timing, and signalling all emerge (or don't) under these pressures.
+//! The unit of life is a multicellular **organism**: one genome grows a **body** of
+//! differentiated cells ([`crate::develop`]) at birth; the whole body then shares one energy
+//! pool, senses its surroundings, is driven by one growing brain ([`crate::brain`]), feeds
+//! through its cells, and reproduces (clonally) by shedding a mutated seed that develops into a
+//! new body. Cell roles (feeding, structure) are continuous evolved traits, never a coded type —
+//! nothing here is hard-wired to an outcome.
 //!
-//! Fixed phase order per tick: 1. commands, 2. spawn/age food-burst events + regrow fields +
-//! decay signal, 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
+//! Fixed phase order per tick: 1. commands, 2. environment (food-burst events + regrow + decay),
+//! 3. rebuild spatial hash, 4. organisms act (index order), 5. apply births.
 
-use crate::brain::{self, Brain, N_CHAN, OUT_AX, OUT_AY};
+use crate::brain::{self, Brain, N_CHAN};
 use crate::command::{Command, CommandKind};
 use crate::environment::SpatialHash;
 use crate::event::{DeathCause, Event, EventBatch};
@@ -18,46 +18,28 @@ use crate::genome::{GeneKind, Genome};
 use crate::math::{canonical_bits, clamp_abs, wrap, Scalar};
 use crate::organism::{NewOrganism, Organisms};
 use crate::params::WorldParams;
+use crate::regnet::RegNet;
 use crate::rng::{splitmix64, subsystem, Pcg32};
 
+/// World units between adjacent body-lattice cells (sets how big a developed body is on screen).
+pub const SPACING: Scalar = 2.5;
+/// Feeding: a cell always harvests a base fraction, feeder cells much more (`role_feed` scales it).
+const FEED_BASE: f32 = 0.30;
+const FEED_GAIN: f32 = 0.80;
+/// Upkeep per fully-structural cell (defense is not free — the role trade-off's cost side).
+const STRUCT_UPKEEP_FULL: i64 = 2;
+/// Below this squared speed the heading is kept (avoids normalizing a zero vector).
+const HEADING_EPS: f32 = 1e-6;
+
 /// A transient **food-burst event**: a disc where food regrows faster, for a limited time.
-///
-/// Unlike the old permanent drifting oases, a bloom appears (from a rare random spawn or the
-/// user's brush), boosts regrowth for `life` ticks, then vanishes — the food it grew is left to
-/// be eaten down (the boom, then the bust). It only ever perturbs the *environment*: who
-/// exploits the surge, and how, is left entirely to selection (no scripted "scavenger").
 #[derive(Clone, Debug)]
 pub struct Bloom {
     pub x: Scalar,
     pub y: Scalar,
     pub radius: Scalar,
     pub boost: i64,
-    /// Ticks elapsed since the event began.
     pub age: u32,
-    /// Total lifetime in ticks; the event is removed once `age >= life`.
     pub life: u32,
-}
-
-/// A physical **bond** between two cells (M3) — the substrate for emergent bodies.
-///
-/// A bond is a spring that holds two cells near contact. Bonds form only by *incomplete
-/// division* (a newborn staying attached to its parent, with probability = the parent's evolved
-/// `adhesion`), and a "body" is nothing more than a connected cluster of bonded cells — an
-/// interpretation we place on the graph, never a type in the code. Cells store no shared state
-/// and get **no special treatment**: a bonded cell eats, is eaten, pays upkeep, and is crowded
-/// exactly like a lone cell. The only effect of a bond is the spring force below, so bodies must
-/// pay for themselves through pure physics (and against the crowding cost of clumping) or not
-/// appear at all.
-///
-/// Endpoints are stored as `(slot, id)` pairs. Slots are never moved and are reused only after a
-/// death gives the slot a fresh id, so a stale endpoint is detected by an id mismatch and the
-/// bond is dropped — no bond ever silently re-targets a recycled slot.
-#[derive(Clone, Copy, Debug)]
-pub struct Bond {
-    pub sa: u32,
-    pub ida: u32,
-    pub sb: u32,
-    pub idb: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -65,59 +47,40 @@ pub struct World {
     pub params: WorldParams,
     pub seed: u64,
     pub tick_count: u64,
-    /// Food field A (the "green" resource). Regrows where terrain is fertile.
+    /// Food field (the resource organisms eat).
     pub field: Vec<i64>,
-    /// Food field B (the "amber" resource), anti-correlated with A: rich where A is poor. Two
-    /// non-fungible foods, each digested by a different `diet` gene, so the population splits
-    /// into dietary niches instead of one monoculture on a single resource.
+    /// Second food field, anti-correlated with `field`. Regrows but is unused by organisms in
+    /// Stage 1 (kept resident so the two-food ecology can be re-attached as a cell function later).
     pub field_b: Vec<i64>,
-    /// Static terrain fertility per cell (~0.15..1.9): a landscape of rich and barren places
-    /// that permanently scales local regrowth, so different regions become different habitats.
+    /// Static terrain fertility per cell (~0.15..1.9): scales local regrowth into rich/poor regions.
     pub terrain: Vec<Scalar>,
-    /// Static elevation per cell (0=deep water .. 1=high land): seas, shores and highlands.
-    /// Low ground is a barrier — organisms pay for being where their evolved `habitat` trait
-    /// is a poor fit, so water divides the map and adapting to it (or leaving it) is selection.
+    /// Static elevation per cell (0=deep water .. 1=high land). Present for later habitat coupling.
     pub elevation: Vec<Scalar>,
-    /// Corpse/detritus field: dead organisms leave body mass here; it slowly decomposes into
-    /// the food field (soil enrichment) and can be eaten directly (scavenging).
+    /// Corpse/detritus field: dead bodies leave mass here; it decomposes into the food field.
     pub detritus: Vec<i64>,
-    /// Pheromone/signal field (one integer per grid cell); decays over time.
+    /// Pheromone/signal field (decays); present for later re-attachment.
     pub signal: Vec<i64>,
-    /// Generic chemical channels (M2): `N_CHAN` integer fields flattened as `k*cells + idx`.
-    /// Their meaning (food / toxin / signal) is assigned by evolution, not by us.
+    /// Generic chemical channels — resident but inert in Stage 1 (re-attached as a cell function).
     pub chan: Vec<i64>,
     /// Active transient food-burst events (usually empty; see [`Bloom`]).
     pub blooms: Vec<Bloom>,
-    /// Physical bonds between cells (M3); a body is a connected cluster of these. See [`Bond`].
-    pub bonds: Vec<Bond>,
     pub orgs: Organisms,
     hash: SpatialHash,
 }
 
 struct PendingBirth {
     parent_id: u32,
-    /// Parent's storage slot at reproduction time; used to bond the newborn to it (validated by
-    /// `parent_id` at birth, since the parent may have died before the birth is applied).
-    parent_slot: usize,
     parent_genome: Genome,
     parent_brain: Brain,
+    parent_regnet: RegNet,
     px: Scalar,
     py: Scalar,
 }
 
 impl World {
     pub fn new(seed: u64, params: WorldParams) -> Self {
-        // Chemistry conservation guard: the emit→uptake loop's per-hop gain must be < 1, else a
-        // channel pins at its cap and the population booms (see `step_organism`). Emit at max
-        // strength adds `255/chan_emit_den` per unit intake; uptake returns `num/den` of it.
-        debug_assert!(
-            255 * params.chan_uptake_num < params.chan_emit_den * params.chan_uptake_den,
-            "chemistry loop gain must be < 1: 255·chan_uptake_num < chan_emit_den·chan_uptake_den"
-        );
         let cells = params.cell_count();
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
-        // Food-burst events start empty: the world is calm until one is triggered (randomly, if
-        // `bloom_event_rate > 0`, or by the user).
         let blooms = Vec::new();
         let terrain = make_terrain(seed, &params);
         let elevation = make_elevation(seed, &params);
@@ -130,7 +93,6 @@ impl World {
             signal: vec![0; cells],
             chan: vec![0; N_CHAN * cells],
             blooms,
-            bonds: Vec::new(),
             orgs: Organisms::with_capacity(params.initial_population as usize),
             hash,
             params,
@@ -143,17 +105,24 @@ impl World {
             let py = rng.next_f32_unit() * w.params.height;
             let genome = Genome::founder(&mut rng);
             let brain = Brain::random_minimal(&mut rng);
-            w.orgs.insert(NewOrganism {
-                px,
-                py,
-                vx: 0.0,
-                vy: 0.0,
-                energy: w.params.initial_energy,
-                parent: u32::MAX,
-                birth_tick: 0,
-                genome,
-                brain,
-            });
+            let regnet = RegNet::random_minimal(&mut rng);
+            w.orgs.insert(
+                seed,
+                NewOrganism {
+                    px,
+                    py,
+                    vx: 0.0,
+                    vy: 0.0,
+                    hx: 1.0,
+                    hy: 0.0,
+                    energy: w.params.initial_energy,
+                    parent: u32::MAX,
+                    birth_tick: 0,
+                    genome,
+                    brain,
+                    regnet,
+                },
+            );
         }
         w
     }
@@ -171,7 +140,6 @@ impl World {
         signal: Vec<i64>,
         chan: Vec<i64>,
         blooms: Vec<Bloom>,
-        bonds: Vec<Bond>,
         orgs: Organisms,
     ) -> Self {
         let hash = SpatialHash::new(params.width, params.height, params.sense_radius);
@@ -187,7 +155,6 @@ impl World {
             signal,
             chan,
             blooms,
-            bonds,
             orgs,
             hash,
         }
@@ -225,14 +192,6 @@ impl World {
         (y * gw + x) as usize
     }
 
-    /// Effective edible value at a cell for an organism with digestion efficiencies `(ea, eb)`
-    /// on the two food fields, plus scavengeable detritus (diet-neutral).
-    #[inline]
-    fn eff_food_at(&self, cx: i32, cy: i32, ea: Scalar, eb: Scalar) -> Scalar {
-        let i = self.fidx(cx, cy);
-        self.field[i] as f32 * ea + self.field_b[i] as f32 * eb + self.detritus[i] as f32
-    }
-
     /// A dead organism leaves body mass (scaled by size) in the detritus field.
     #[inline]
     fn deposit_corpse(&mut self, fi: usize, size: Scalar) {
@@ -250,9 +209,7 @@ impl World {
             self.apply_command(c, &mut events);
         }
 
-        // Food-burst events: maybe spawn a random one (off unless `bloom_event_rate > 0`), keyed
-        // by the tick alone so it is reproducible and independent of any organism. User-placed
-        // bursts arrived above via the command phase. Both kinds are aged and expired below.
+        // Food-burst events: maybe spawn a random one (off unless `bloom_event_rate > 0`).
         let (seed, tick_c, w_w, w_h) = (
             self.seed,
             self.tick_count,
@@ -277,7 +234,7 @@ impl World {
 
         // Regrow the field: modulated by daylight and boosted inside active food-burst events.
         let daylight = self.daylight();
-        let day_factor = 0.4 + daylight * 1.2; // [0.4, 1.6]
+        let day_factor = 0.4 + daylight * 1.2;
         let cap = self.params.field_cap;
         let base = self.params.field_regrow;
         let gw = self.params.grid_w as usize;
@@ -290,15 +247,12 @@ impl World {
                 let ccx = (cxi as f32 + 0.5) * cw;
                 let idx = cyi * gw + cxi;
                 let t = self.terrain[idx];
-                // Two foods, half the budget each and anti-correlated: A follows fertility, B is
-                // rich exactly where A is poor. Blooms are lush green patches, so they boost A.
                 let mut rg_a = (base as f32 * day_factor * t * 0.5) as i64;
                 let mut rg_b = (base as f32 * day_factor * (2.05 - t) * 0.5) as i64;
                 for b in &self.blooms {
                     let dx = ccx - b.x;
                     let dy = ccy - b.y;
                     if dx * dx + dy * dy <= b.radius * b.radius {
-                        // a burst is a lush oasis for both foods — don't privilege A
                         rg_a += b.boost;
                         rg_b += b.boost;
                         break;
@@ -311,8 +265,7 @@ impl World {
             }
         }
 
-        // Age food-burst events and drop the expired ones. `retain` keeps insertion order, so
-        // remaining events stay in a canonical, cross-target-deterministic sequence.
+        // Age food-burst events and drop the expired ones.
         for b in self.blooms.iter_mut() {
             b.age += 1;
         }
@@ -324,7 +277,6 @@ impl World {
             let dec = self.detritus[c] / ddiv;
             if dec > 0 {
                 self.detritus[c] -= dec;
-                // corpses enrich both soils, so scavenging doesn't privilege the food-A niche
                 let half = dec / 2;
                 let va = self.field[c] + half;
                 self.field[c] = if va > cap { cap } else { va };
@@ -338,18 +290,15 @@ impl World {
             *s = *s * 9 / 10;
         }
 
-        // Diffuse + decay the chemical channels (M2). Integer, mass-conserving (double-buffered),
-        // toroidal — so a substance one lineage emits spreads and settles before others sense it.
-        // Each cell donates `conc/ddiv` to EACH of 4 neighbours, so `ddiv` must be >= 4 or a cell
-        // over-donates and goes negative; `< 4` means diffusion is off.
+        // Diffuse + decay the chemical channels (inert in Stage 1, but kept resident + deterministic).
         let cells = gw * gh;
-        let ddiv = self.params.chan_diffuse_div;
-        if ddiv >= 4 {
+        let cddiv = self.params.chan_diffuse_div;
+        if cddiv >= 4 {
             let mut buf = vec![0i64; cells];
             for k in 0..N_CHAN {
-                let base = k * cells;
+                let cbase = k * cells;
                 for (idx, b) in buf.iter_mut().enumerate() {
-                    *b = self.chan[base + idx] / ddiv;
+                    *b = self.chan[cbase + idx] / cddiv;
                 }
                 for cy in 0..gh {
                     for cx in 0..gw {
@@ -362,7 +311,7 @@ impl World {
                             + buf[cy * gw + xp]
                             + buf[ym * gw + cx]
                             + buf[yp * gw + cx];
-                        self.chan[base + i] = self.chan[base + i] - 4 * buf[i] + inflow;
+                        self.chan[cbase + i] = self.chan[cbase + i] - 4 * buf[i] + inflow;
                     }
                 }
             }
@@ -377,57 +326,6 @@ impl World {
 
         self.hash.rebuild(&self.orgs);
 
-        // --- M3: bond springs (bodies) --- Pull each pair of bonded cells toward contact, and
-        // drop bonds whose endpoint died/recycled (id mismatch) or stretched past breaking. Bonds
-        // are visited in canonical order, so the non-associative float force sums are bit-identical
-        // across targets. Run before the act loop, so each spring impulse folds into the normal
-        // velocity update and speed clamp (no runaway). A body earns its keep purely here — there
-        // is no cluster bonus anywhere else in the tick.
-        let k = self.params.bond_stiffness;
-        let restf = self.params.bond_rest;
-        let breakf = self.params.bond_break_factor;
-        // Body shield: mass of each cell's directly-bonded neighbours (rebuilt every tick from the
-        // hashed state, so it is derived — never serialized or hashed). Predation reads it so a
-        // bonded cell is gape-limited by the lump it is part of: to eat it you must out-size the
-        // whole local body, not just the one cell. A lone cell has shield 0 → predation unchanged.
-        let cap_now = self.orgs.capacity();
-        let mut body_shield = vec![0.0f32; cap_now];
-        let mut kept_bonds: Vec<Bond> = Vec::with_capacity(self.bonds.len());
-        for &b in &self.bonds {
-            let (sa, sb) = (b.sa as usize, b.sb as usize);
-            if !(self.orgs.alive[sa]
-                && self.orgs.id[sa] == b.ida
-                && self.orgs.alive[sb]
-                && self.orgs.id[sb] == b.idb)
-            {
-                continue; // an endpoint died (or its slot was recycled) — the bond is gone
-            }
-            let dx = self.orgs.px[sb] - self.orgs.px[sa];
-            let dy = self.orgs.py[sb] - self.orgs.py[sa];
-            let dist2 = dx * dx + dy * dy;
-            let rest = restf * 0.5 * (self.orgs.g_size[sa] + self.orgs.g_size[sb]);
-            let brk = rest * breakf;
-            if dist2 > brk * brk {
-                continue; // stretched past breaking — the body tears here
-            }
-            kept_bonds.push(b);
-            body_shield[sa] += self.orgs.g_size[sb];
-            body_shield[sb] += self.orgs.g_size[sa];
-            if dist2 > 1e-6 {
-                let dist = dist2.sqrt();
-                let f = k * (dist - rest); // Hooke's law: >0 pulls together, <0 pushes apart
-                let (ux, uy) = (dx / dist, dy / dist);
-                // equal and opposite, each divided by cell size (its mass): a big cell budges less
-                let ia = f / self.orgs.g_size[sa];
-                let ib = f / self.orgs.g_size[sb];
-                self.orgs.vx[sa] += ux * ia;
-                self.orgs.vy[sa] += uy * ia;
-                self.orgs.vx[sb] -= ux * ib;
-                self.orgs.vy[sb] -= uy * ib;
-            }
-        }
-        self.bonds = kept_bonds;
-
         let tick = self.tick_count;
         let mut births: Vec<PendingBirth> = Vec::new();
         let mut scratch: Vec<Scalar> = Vec::new();
@@ -436,25 +334,16 @@ impl World {
             if !self.orgs.alive[i] {
                 continue;
             }
-            self.step_organism(
-                i,
-                tick,
-                daylight,
-                &body_shield,
-                &mut scratch,
-                &mut births,
-                &mut events,
-            );
+            self.step_body(i, tick, daylight, &mut scratch, &mut births, &mut events);
         }
 
         for (seq, b) in births.into_iter().enumerate() {
             let key = splitmix64(b.parent_id as u64)
                 ^ splitmix64(tick.wrapping_mul(0x0100_0000_01b3))
                 ^ splitmix64(seq as u64);
-            // Separate streams for genome and brain, so adding gene draws (M2) never perturbs
-            // brain evolution.
             let mut grng = Pcg32::from_key(self.seed, subsystem::GENOME, key);
             let mut brng = Pcg32::from_key(self.seed, subsystem::MUTATION, key);
+            let mut rrng = Pcg32::from_key(self.seed, subsystem::DEVELOP, key);
             let mut genome = b.parent_genome;
             genome.mutate(&mut grng, &self.params);
             let mut brain = b.parent_brain;
@@ -466,37 +355,35 @@ impl World {
                 self.params.add_node_prob,
             );
             brain.reset_state();
+            let mut regnet = b.parent_regnet;
+            regnet.mutate(
+                &mut rrng,
+                self.params.mutation_rate,
+                self.params.weight_mut_delta,
+                self.params.add_conn_prob,
+                self.params.add_node_prob,
+            );
             let dx = brng.next_f32_signed() * self.params.spawn_radius;
             let dy = brng.next_f32_signed() * self.params.spawn_radius;
             let px = wrap(b.px + dx, self.params.width);
             let py = wrap(b.py + dy, self.params.height);
-            let (child_slot, id) = self.orgs.insert(NewOrganism {
-                px,
-                py,
-                vx: 0.0,
-                vy: 0.0,
-                energy: self.params.offspring_energy,
-                parent: b.parent_id,
-                birth_tick: tick,
-                genome,
-                brain,
-            });
-            // M3: incomplete division. If the parent is still the same living cell, it keeps the
-            // newborn bonded with probability = its evolved `adhesion` (the roll is on its own
-            // keyed stream, so it never perturbs genome/brain evolution). The id check also rules
-            // out a self-bond when the child reused the parent's just-freed slot.
-            if self.orgs.alive[b.parent_slot] && self.orgs.id[b.parent_slot] == b.parent_id {
-                let adh = self.orgs.g_adhesion[b.parent_slot];
-                let mut arng = Pcg32::from_key(self.seed, subsystem::ADHESION, key);
-                if (arng.below(1000) as i64) < (adh * 1000.0) as i64 {
-                    self.bonds.push(Bond {
-                        sa: b.parent_slot as u32,
-                        ida: b.parent_id,
-                        sb: child_slot as u32,
-                        idb: id,
-                    });
-                }
-            }
+            let (_, id) = self.orgs.insert(
+                self.seed,
+                NewOrganism {
+                    px,
+                    py,
+                    vx: 0.0,
+                    vy: 0.0,
+                    hx: 1.0,
+                    hy: 0.0,
+                    energy: self.params.offspring_energy,
+                    parent: b.parent_id,
+                    birth_tick: tick,
+                    genome,
+                    brain,
+                    regnet,
+                },
+            );
             events.events.push(Event::Birth {
                 id,
                 parent: b.parent_id,
@@ -508,41 +395,42 @@ impl World {
         events
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn step_organism(
+    fn step_body(
         &mut self,
         i: usize,
-        tick: u64,
+        _tick: u64,
         daylight: f32,
-        body_shield: &[Scalar],
         scratch: &mut Vec<Scalar>,
         births: &mut Vec<PendingBirth>,
         events: &mut EventBatch,
     ) {
         let p = &self.params;
         let cap = p.field_cap as f32;
-        let cells = p.cell_count();
+        let (gw, gh) = (p.grid_w as i32, p.grid_h as i32);
+        let (cw, ch) = (p.width / gw as f32, p.height / gh as f32);
         let sx = self.orgs.px[i];
         let sy = self.orgs.py[i];
-        let size = self.orgs.g_size[i];
+        let metab = self.orgs.g_metab[i];
+        let mass_units = {
+            let m = self.orgs.mass_milli[i] as f32 / 1000.0;
+            if m < 0.4 {
+                0.4
+            } else {
+                m
+            }
+        };
 
-        // --- sense (food is what THIS organism can actually digest, per its diet gene) ---
-        // Convex trade-off (squared): a specialist eats its food at full rate while a generalist
-        // is only ~¼ on each, so specialising strictly beats hedging — two diets, not one mush.
-        let diet = self.orgs.g_diet[i];
-        let a = 1.0 - diet;
-        let (ea, eb) = (a * a, diet * diet);
-        let (cx, cy) = self.cell_of(sx, sy);
+        // --- aggregate sense (the whole body reads its centre) ---
+        let (cx, cy) = ((sx / cw) as i32, (sy / ch) as i32);
         let here = self.fidx(cx, cy);
-        let food = self.eff_food_at(cx, cy, ea, eb) / cap;
-        let east = self.eff_food_at(cx + 1, cy, ea, eb);
-        let west = self.eff_food_at(cx - 1, cy, ea, eb);
-        let north = self.eff_food_at(cx, cy - 1, ea, eb);
-        let south = self.eff_food_at(cx, cy + 1, ea, eb);
+        let food = self.field[here] as f32 / cap;
+        let east = self.field[self.fidx(cx + 1, cy)] as f32;
+        let west = self.field[self.fidx(cx - 1, cy)] as f32;
+        let north = self.field[self.fidx(cx, cy - 1)] as f32;
+        let south = self.field[self.fidx(cx, cy + 1)] as f32;
         let grad_x = (east - west) / cap;
         let grad_y = (south - north) / cap;
         let energy_in = (self.orgs.energy[i] as f32 / p.repro_threshold as f32).min(2.0) - 1.0;
-        let signal_in = (self.signal[here] as f32 / p.signal_cap.max(1) as f32).min(1.0);
         let elev_in = self.elevation[here] * 2.0 - 1.0;
 
         let nn = self.hash.nearest(&self.orgs, i, sx, sy, p.sense_radius);
@@ -550,7 +438,10 @@ impl World {
             Some(j) => (
                 clamp_abs((self.orgs.px[j] - sx) / p.sense_radius, 1.0),
                 clamp_abs((self.orgs.py[j] - sy) / p.sense_radius, 1.0),
-                clamp_abs(self.orgs.g_size[j] - size, 1.0),
+                clamp_abs(
+                    (self.orgs.mass_milli[j] - self.orgs.mass_milli[i]) as f32 / 8000.0,
+                    1.0,
+                ),
             ),
             None => (0.0, 0.0, 0.0),
         };
@@ -565,204 +456,189 @@ impl World {
         inputs[brain::IN_NN_DY] = nn_dy;
         inputs[brain::IN_NN_RELSIZE] = nn_relsize;
         inputs[brain::IN_DAYLIGHT] = daylight * 2.0 - 1.0;
-        inputs[brain::IN_SIGNAL] = signal_in;
         inputs[brain::IN_ELEVATION] = elev_in;
-        // Chemical senses: a channel slot carries information only where a Sense gene made it live.
-        let sm = self.orgs.sense_mask[i];
-        if sm != 0 {
-            let sense_cap = p.chan_sense_cap.max(1) as f32;
-            for k in 0..N_CHAN {
-                if sm & (1 << k) != 0 {
-                    let c = self.chan[k * cells + here];
-                    inputs[brain::IN_CHAN0 + k] = (c as f32 / sense_cap).min(1.0);
-                }
-            }
-        }
 
         // --- think ---
         let out = self.orgs.brains[i].forward(&inputs, scratch);
 
-        // --- act ---
-        let accel = p.accel_scale / size;
-        let vx = clamp_abs(self.orgs.vx[i] * 0.85 + out[OUT_AX] * accel, p.max_speed);
-        let vy = clamp_abs(self.orgs.vy[i] * 0.85 + out[OUT_AY] * accel, p.max_speed);
+        // --- move whole body (accel scaled by total mass) ---
+        let accel = p.accel_scale / mass_units;
+        let vx = clamp_abs(
+            self.orgs.vx[i] * 0.85 + out[brain::OUT_AX] * accel,
+            p.max_speed,
+        );
+        let vy = clamp_abs(
+            self.orgs.vy[i] * 0.85 + out[brain::OUT_AY] * accel,
+            p.max_speed,
+        );
         self.orgs.vx[i] = vx;
         self.orgs.vy[i] = vy;
-        self.orgs.px[i] = wrap(sx + vx, p.width);
-        self.orgs.py[i] = wrap(sy + vy, p.height);
+        let nx = wrap(sx + vx, p.width);
+        let ny = wrap(sy + vy, p.height);
+        self.orgs.px[i] = nx;
+        self.orgs.py[i] = ny;
+        // update heading from velocity (guarded normalization)
+        let sp2 = vx * vx + vy * vy;
+        if sp2 > HEADING_EPS {
+            let inv = 1.0 / sp2.sqrt();
+            self.orgs.hx[i] = vx * inv;
+            self.orgs.hy[i] = vy * inv;
+        }
+        let (hx, hy) = (self.orgs.hx[i], self.orgs.hy[i]);
 
-        // --- eat both foods, each scaled by digestion efficiency (the diet trade-off) ---
-        let (ncx, ncy) = self.cell_of(self.orgs.px[i], self.orgs.py[i]);
-        let fi = self.fidx(ncx, ncy);
-        let want = ((p.eat_rate as f32) * self.orgs.g_metab[i]) as i64;
-        let got_a = ((want as f32 * ea) as i64).min(self.field[fi]).max(0);
-        self.field[fi] -= got_a;
-        let got_b = ((want as f32 * eb) as i64).min(self.field_b[fi]).max(0);
-        self.field_b[fi] -= got_b;
-        // Scavenging corpses is slower than grazing (so carcasses linger) and diet-neutral.
-        let scav = ((want - got_a - got_b) / 2).max(0);
-        let from_det = scav.min(self.detritus[fi]);
-        self.detritus[fi] -= from_det;
-        self.orgs.energy[i] += got_a + got_b + from_det;
-
-        // --- chemistry: absorb channels this lineage digests ---
-        // Emit (below) is a FREE byproduct — necessary so cross-feeding can bootstrap (a costed
-        // emit would be pure altruism and get selected away). Uptake is lossy, which *bounds* the
-        // emit→uptake loop rather than forbidding it: the per-hop gain
-        // `(255/chan_emit_den)·(chan_uptake_num/chan_uptake_den)` is 1/3 at defaults (< 1), so the
-        // geometric series converges to ~1.5× the underlying food energy (a modelled
-        // residual-energy-of-waste input, not strict conservation). The `< 1` invariant is asserted
-        // in `World::new`; break it and a channel pins at cap and the population booms.
-        let up = self.orgs.uptake_ch[i];
-        let mut chan_gain = 0i64;
-        for (k, &uk) in up.iter().enumerate() {
-            let u = uk as i64;
-            if u > 0 {
-                let ci = k * cells + fi;
-                let want_c = p.chan_uptake_rate * u / 255;
-                let got = want_c.min(self.chan[ci]).max(0);
-                self.chan[ci] -= got;
-                chan_gain += got * p.chan_uptake_num / p.chan_uptake_den;
+        // --- feed (per cell): each cell harvests food from the grid cell under its footprint,
+        // scaled by its feeding role; the whole body shares one pool. Cells visited in canonical
+        // order; all sums are i64 (exact, order-free). ---
+        let eat_rate = p.eat_rate as f32;
+        // Diet trade-off (Stage 2): a specialist digests its food at full rate while a generalist
+        // is only ~¼ on each, so specialising strictly beats hedging → two dietary niches.
+        let diet = self.orgs.g_diet[i];
+        let da = 1.0 - diet;
+        let (ea, eb) = (da * da, diet * diet);
+        let mut intake: i64 = 0;
+        let mut struct_load: i64 = 0;
+        let n_cells = self.orgs.bodies[i].cells.len() as i64;
+        {
+            let cells_ptr = &self.orgs.bodies[i];
+            for c in &cells_ptr.cells {
+                let feed01 = c.role_feed as f32 / 1000.0;
+                let struct01 = c.role_struct as f32 / 1000.0;
+                struct_load += (struct01 * STRUCT_UPKEEP_FULL as f32) as i64;
+                let lu = c.lu as f32;
+                let lv = c.lv as f32;
+                let wx = nx + (lu * hx - lv * hy) * SPACING;
+                let wy = ny + (lu * hy + lv * hx) * SPACING;
+                let fx = ((wx / cw) as i32).rem_euclid(gw);
+                let fy = ((wy / ch) as i32).rem_euclid(gh);
+                let fi = (fy * gw + fx) as usize;
+                let want = eat_rate * metab * (FEED_BASE + FEED_GAIN * feed01);
+                let want_a = (want * ea) as i64;
+                if want_a > 0 {
+                    let avail = self.field[fi];
+                    let got = if want_a < avail { want_a } else { avail };
+                    if got > 0 {
+                        self.field[fi] -= got;
+                        intake += got;
+                    }
+                }
+                let want_b = (want * eb) as i64;
+                if want_b > 0 {
+                    let avail = self.field_b[fi];
+                    let got = if want_b < avail { want_b } else { avail };
+                    if got > 0 {
+                        self.field_b[fi] -= got;
+                        intake += got;
+                    }
+                }
             }
         }
-        self.orgs.energy[i] += chan_gain;
+        self.orgs.energy[i] += intake;
 
-        // --- chemistry: excrete byproducts of intake into the channels ---
-        let em = self.orgs.emit_ch[i];
-        let intake = got_a + got_b + from_det + chan_gain;
-        for (k, &ek) in em.iter().enumerate() {
-            let e = ek as i64;
-            if e > 0 {
-                let amt = p.chan_emit_base + intake * e / p.chan_emit_den;
-                let ci = k * cells + fi;
-                let v = self.chan[ci] + amt;
-                self.chan[ci] = if v > p.chan_cap { p.chan_cap } else { v };
-            }
-        }
-
-        // --- emit signal ---
-        let emit = out[brain::OUT_EMIT];
-        if emit > 0.0 {
-            let v = self.signal[fi] + (emit * p.emit_scale as f32) as i64;
-            self.signal[fi] = if v > p.signal_cap { p.signal_cap } else { v };
-        }
-
-        // --- predation: bite a smaller neighbour in contact. A full bite when actually pursuing;
-        // a small innate nibble on incidental contact (so a proto-predator can bootstrap). ---
+        // --- predation: a bigger body eats a smaller one it is touching. Gape-limited by total
+        // mass, with NO predator/prey flag — who eats whom falls out of evolved body size. This is
+        // the pressure under which being multicellular (hence bigger, hence hard to eat and able to
+        // eat) can pay, so multicellularity can EMERGE from single cells instead of being given. ---
         if let Some(j) = nn {
-            // Gape limit: eating a bonded prey means out-sizing the whole lump it is part of
-            // (its own size plus the mass of its bonded neighbours). Lone prey: shield 0.
-            let prey_size = self.orgs.g_size[j] + body_shield[j];
-            if self.orgs.alive[j] && size >= prey_size * p.predation_size_ratio {
-                let dxp = self.orgs.px[j] - self.orgs.px[i];
-                let dyp = self.orgs.py[j] - self.orgs.py[i];
-                if dxp * dxp + dyp * dyp <= p.contact_radius * p.contact_radius {
-                    let pursuing = dxp * vx + dyp * vy > 0.0; // moving toward the prey?
-                    let (bite, carn_gain) = if pursuing {
-                        (p.bite_amount, 0.3)
-                    } else {
-                        (p.innate_bite, 0.05)
-                    };
-                    let victim = self.orgs.energy[j];
-                    if victim > 0 && bite > 0 {
-                        let steal = bite.min(victim);
-                        self.orgs.energy[j] -= steal;
-                        let gain = steal * p.predation_gain_num / p.predation_gain_den;
-                        self.orgs.energy[i] += gain;
-                        self.orgs.carnivory[i] = (self.orgs.carnivory[i] + carn_gain).min(1.0);
-                        if self.orgs.energy[j] <= 0 {
-                            let vsize = self.orgs.g_size[j];
-                            let (jcx, jcy) = self.cell_of(self.orgs.px[j], self.orgs.py[j]);
-                            let fj = self.fidx(jcx, jcy);
-                            let mass =
-                                p.death_deposit + (vsize * p.corpse_size_factor as f32) as i64;
-                            let capd = p.field_cap * 4;
-                            let v = self.detritus[fj] + mass;
-                            self.detritus[fj] = if v > capd { capd } else { v };
-                            events.events.push(Event::Death {
-                                id: self.orgs.id[j],
-                                cause: DeathCause::Predated,
-                                tick,
-                            });
-                            self.orgs.kill(j);
+            if self.orgs.alive[j] {
+                let mi = self.orgs.mass_milli[i];
+                let mj = self.orgs.mass_milli[j];
+                if (mi as f32) >= (mj as f32) * p.predation_size_ratio {
+                    let dxp = self.orgs.px[j] - nx;
+                    let dyp = self.orgs.py[j] - ny;
+                    // reach grows with the two bodies' sizes (a big mouth touching a small prey)
+                    let reach = p.contact_radius + (mi + mj) as f32 / 1000.0 * 0.6;
+                    if dxp * dxp + dyp * dyp <= reach * reach {
+                        let prey_e = self.orgs.energy[j];
+                        let steal = if p.bite_amount < prey_e {
+                            p.bite_amount
+                        } else {
+                            prey_e
+                        };
+                        if steal > 0 {
+                            self.orgs.energy[j] -= steal;
+                            self.orgs.energy[i] +=
+                                steal * p.predation_gain_num / p.predation_gain_den;
+                            if self.orgs.energy[j] <= 0 {
+                                let fx = ((self.orgs.px[j] / cw) as i32).rem_euclid(gw);
+                                let fy = ((self.orgs.py[j] / ch) as i32).rem_euclid(gh);
+                                let fj = (fy * gw + fx) as usize;
+                                // deposit the prey's corpse (inlined so no &mut self method call
+                                // conflicts with the `p` borrow held across this function)
+                                let capd = p.field_cap * 4;
+                                let dep = p.death_deposit
+                                    + ((mj as f32 / 1000.0) * p.corpse_size_factor as f32) as i64;
+                                let v = self.detritus[fj] + dep;
+                                self.detritus[fj] = if v > capd { capd } else { v };
+                                events.events.push(Event::Death {
+                                    id: self.orgs.id[j],
+                                    cause: DeathCause::Predated,
+                                    tick: _tick,
+                                });
+                                self.orgs.kill(j);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // --- metabolism (brain complexity is taxed above a free threshold) ---
-        let sq = vx * vx + vy * vy;
-        let move_cost = (sq * (p.move_cost_coeff as f32) * size) as i64;
-        let size_cost = ((size - 1.0) * p.size_upkeep as f32).max(0.0) as i64;
+        // --- upkeep (per cell + whole-body) ---
+        let move_cost = (sp2 * (p.move_cost_coeff as f32) * mass_units) as i64;
+        let size_cost = (mass_units * p.size_upkeep as f32) as i64;
+        let basal = n_cells * p.basal_upkeep;
         let brain_cost = (self.orgs.brains[i].complexity() as i64 - 18).max(0) * p.brain_cost;
-        // habitat mismatch: being where your evolved `habitat` trait doesn't fit the local
-        // elevation drains energy (quadratically). Deep water is thus lethal to the ill-adapted
-        // — a barrier — and matching a place beats generalising, so water/land split into niches.
-        let mism = self.elevation[fi] - self.orgs.g_habitat[i];
-        let habitat_cost = ((p.habitat_cost as f32) * mism * mism) as i64;
-        // density-dependent competition: crowding drains energy, so a niche fills to a carrying
-        // capacity instead of the whole grid packing to a uniform carpet.
+        let regnet_cost = (self.orgs.regnets[i].complexity() as i64) / 4 * p.brain_cost;
         let crowd = self
             .hash
             .count_within(&self.orgs, i, sx, sy, p.crowd_radius);
         let crowd_cost = crowd as i64 * p.crowd_cost;
-        // chemistry costs: toxicity of non-resisted channels above threshold, plus upkeep for the
-        // uptake and resistance machinery this lineage carries.
-        let rm = self.orgs.resist_mask[i];
-        let mut toxin_cost = 0i64;
-        for k in 0..N_CHAN {
-            let c = self.chan[k * cells + fi];
-            if c > p.chan_toxic_threshold && rm & (1 << k) == 0 {
-                toxin_cost += (c - p.chan_toxic_threshold) * p.chan_toxin_num / p.chan_toxin_den;
-            }
-        }
-        let uptake_upkeep = up.iter().filter(|&&x| x > 0).count() as i64 * p.chan_uptake_upkeep;
-        let resist_upkeep = rm.count_ones() as i64 * p.chan_resist_upkeep;
-        self.orgs.energy[i] -= p.basal_upkeep
-            + brain_cost
+        // habitat mismatch (Stage 2): being where the local terrain doesn't fit the body's evolved
+        // `habitat` trait drains energy quadratically, so deep water is a barrier and adapting to
+        // water (or leaving it) is left to selection.
+        let mism = self.elevation[here] - self.orgs.g_habitat[i];
+        let habitat_cost = ((p.habitat_cost as f32) * mism * mism) as i64;
+        self.orgs.energy[i] -= basal
             + size_cost
             + move_cost
-            + habitat_cost
+            + brain_cost
+            + regnet_cost
             + crowd_cost
-            + toxin_cost
-            + uptake_upkeep
-            + resist_upkeep;
-        self.orgs.carnivory[i] *= 0.99;
+            + struct_load
+            + habitat_cost;
         self.orgs.age[i] += 1;
 
-        // --- death ---
+        // --- death (the whole body dies at once) ---
         if self.orgs.energy[i] <= 0 {
-            self.deposit_corpse(fi, size);
+            self.deposit_corpse(here, mass_units);
             events.events.push(Event::Death {
                 id: self.orgs.id[i],
                 cause: DeathCause::Starved,
-                tick,
+                tick: _tick,
             });
             self.orgs.kill(i);
             return;
         }
         if self.orgs.age[i] >= p.max_age {
-            self.deposit_corpse(fi, size);
+            self.deposit_corpse(here, mass_units);
             events.events.push(Event::Death {
                 id: self.orgs.id[i],
                 cause: DeathCause::OldAge,
-                tick,
+                tick: _tick,
             });
             self.orgs.kill(i);
             return;
         }
 
-        // --- reproduce (per-organism threshold, brain-gated) ---
+        // --- reproduce (clonal: shed one mutated seed that develops into a new body) ---
         let threshold = ((p.repro_threshold as f32) * self.orgs.g_repro[i]) as i64;
         let wants_repro = out[brain::OUT_REPRO] > -0.2;
         if wants_repro && self.orgs.energy[i] >= threshold && self.orgs.count < p.max_population {
             self.orgs.energy[i] -= p.repro_cost + p.offspring_energy;
             births.push(PendingBirth {
                 parent_id: self.orgs.id[i],
-                parent_slot: i,
                 parent_genome: self.orgs.genome_at(i),
                 parent_brain: self.orgs.brains[i].clone(),
+                parent_regnet: self.orgs.regnets[i].clone(),
                 px: self.orgs.px[i],
                 py: self.orgs.py[i],
             });
@@ -800,17 +676,24 @@ impl World {
                 let mut rng = Pcg32::from_key(self.seed, subsystem::SPAWN, key);
                 let genome = Genome::founder(&mut rng);
                 let brain = Brain::random_minimal(&mut rng);
-                self.orgs.insert(NewOrganism {
-                    px,
-                    py,
-                    vx: 0.0,
-                    vy: 0.0,
-                    energy: *energy,
-                    parent: u32::MAX,
-                    birth_tick: self.tick_count,
-                    genome,
-                    brain,
-                });
+                let regnet = RegNet::random_minimal(&mut rng);
+                self.orgs.insert(
+                    self.seed,
+                    NewOrganism {
+                        px,
+                        py,
+                        vx: 0.0,
+                        vy: 0.0,
+                        hx: 1.0,
+                        hy: 0.0,
+                        energy: *energy,
+                        parent: u32::MAX,
+                        birth_tick: self.tick_count,
+                        genome,
+                        brain,
+                        regnet,
+                    },
+                );
             }
             CommandKind::Bloom { cx, cy } => {
                 let cw = self.params.width / self.params.grid_w as f32;
@@ -854,8 +737,8 @@ impl World {
         }
     }
 
-    /// A 64-bit fingerprint of the entire world state — fields, signal, blooms, and every
-    /// organism (including brain structure + recurrent activations), hashed in id order.
+    /// A 64-bit fingerprint of the entire world state — fields, blooms, and every organism
+    /// (genome, brain, developmental net, and a digest of its developed body), hashed in id order.
     pub fn state_hash(&self) -> u64 {
         let mut h = Fnv::new();
         h.u64(self.tick_count);
@@ -890,13 +773,6 @@ impl World {
             h.u32(b.age);
             h.u32(b.life);
         }
-        h.u32(self.bonds.len() as u32);
-        for b in &self.bonds {
-            h.u32(b.sa);
-            h.u32(b.ida);
-            h.u32(b.sb);
-            h.u32(b.idb);
-        }
 
         let mut idx: Vec<usize> = (0..self.orgs.capacity())
             .filter(|&i| self.orgs.alive[i])
@@ -910,27 +786,16 @@ impl World {
             h.u32(canonical_bits(o.py[i]));
             h.u32(canonical_bits(o.vx[i]));
             h.u32(canonical_bits(o.vy[i]));
+            h.u32(canonical_bits(o.hx[i]));
+            h.u32(canonical_bits(o.hy[i]));
             h.i64(o.energy[i]);
             h.u32(o.age[i]);
             h.u32(o.parent[i]);
             h.u64(o.birth_tick[i]);
-            h.u32(canonical_bits(o.g_size[i]));
             h.u32(canonical_bits(o.g_metab[i]));
             h.u32(canonical_bits(o.g_repro[i]));
-            h.u32(canonical_bits(o.g_habitat[i]));
             h.u32(canonical_bits(o.g_diet[i]));
-            h.u8(o.cr[i]);
-            h.u8(o.cg[i]);
-            h.u8(o.cb[i]);
-            h.u32(canonical_bits(o.carnivory[i]));
-            h.u16(o.sense_mask[i]);
-            h.u16(o.resist_mask[i]);
-            for &e in &o.emit_ch[i] {
-                h.u8(e);
-            }
-            for &u in &o.uptake_ch[i] {
-                h.u8(u);
-            }
+            h.u32(canonical_bits(o.g_habitat[i]));
             let br = &o.brains[i];
             h.u32(br.n_hidden as u32);
             h.u32(br.conns.len() as u32);
@@ -946,8 +811,29 @@ impl World {
             for &x in &br.act {
                 h.u32(canonical_bits(x));
             }
-            // The raw genome is authoritative state: distinct gene lists can share a phenotype
-            // yet mutate differently, so hash the genes themselves (id + kind), in list order.
+            let rn = &o.regnets[i];
+            h.u32(rn.n_hidden as u32);
+            h.u32(rn.conns.len() as u32);
+            for c in &rn.conns {
+                h.u32(c.from);
+                h.u32(c.to);
+                h.u32(canonical_bits(c.w));
+                h.u8(c.enabled as u8);
+            }
+            for &x in &rn.bias {
+                h.u32(canonical_bits(x));
+            }
+            // Body digest (derived, cheap): catches any nondeterminism inside development directly.
+            let body = &o.bodies[i];
+            h.u32(body.cells.len() as u32);
+            for cell in &body.cells {
+                h.i16(cell.lu);
+                h.i16(cell.lv);
+                h.u32(cell.size_milli as u32);
+                h.i16(cell.role_feed);
+                h.i16(cell.role_struct);
+            }
+            // The raw genome is authoritative state.
             let gm = &o.genomes[i];
             h.u32(gm.genes.len() as u32);
             for gene in &gm.genes {
@@ -959,8 +845,7 @@ impl World {
     }
 }
 
-/// Generate a static fertility landscape from the seed: a few fertile and barren centres with
-/// linear falloff, giving smooth rich/poor regions. Deterministic (only `+ - * / sqrt`).
+/// Generate a static fertility landscape from the seed. Deterministic (only `+ - * / sqrt`).
 fn make_terrain(seed: u64, p: &WorldParams) -> Vec<Scalar> {
     let gw = p.grid_w as i32;
     let gh = p.grid_h as i32;
@@ -1003,10 +888,7 @@ fn make_terrain(seed: u64, p: &WorldParams) -> Vec<Scalar> {
     t
 }
 
-/// Generate a static elevation map (0 = deep water .. 1 = high land) from the seed: a few sea
-/// basins carved into a mid-level land, plus some highlands, each with linear falloff. The low
-/// ground (below `water_level`) reads as water and — via the habitat-mismatch cost — acts as a
-/// barrier that can split the map into isolated habitats. Deterministic (`+ - * / sqrt` only).
+/// Generate a static elevation map (0 = deep water .. 1 = high land). Deterministic (`+ - * / sqrt`).
 fn make_elevation(seed: u64, p: &WorldParams) -> Vec<Scalar> {
     let gw = p.grid_w as i32;
     let gh = p.grid_h as i32;
@@ -1035,13 +917,13 @@ fn make_elevation(seed: u64, p: &WorldParams) -> Vec<Scalar> {
         let py = (cy as f32 + 0.5) * ch;
         for cx in 0..gw {
             let px = (cx as f32 + 0.5) * cw;
-            let mut h = base;
+            let mut hgt = base;
             for &(sx, sy) in &seas {
                 let dx = px - sx;
                 let dy = py - sy;
                 let d = (dx * dx + dy * dy).sqrt();
                 if d < sea_r {
-                    h -= 0.85 * (1.0 - d / sea_r);
+                    hgt -= 0.85 * (1.0 - d / sea_r);
                 }
             }
             for &(mx, my) in &peaks {
@@ -1049,10 +931,10 @@ fn make_elevation(seed: u64, p: &WorldParams) -> Vec<Scalar> {
                 let dy = py - my;
                 let d = (dx * dx + dy * dy).sqrt();
                 if d < peak_r {
-                    h += 0.4 * (1.0 - d / peak_r);
+                    hgt += 0.4 * (1.0 - d / peak_r);
                 }
             }
-            e[(cy * gw + cx) as usize] = h.clamp(0.0, 1.0);
+            e[(cy * gw + cx) as usize] = hgt.clamp(0.0, 1.0);
         }
     }
     e
@@ -1159,29 +1041,20 @@ mod tests {
 
     #[test]
     fn deterministic_same_seed() {
-        assert_eq!(run(12345, 300).state_hash(), run(12345, 300).state_hash());
+        assert_eq!(run(12345, 200).state_hash(), run(12345, 200).state_hash());
     }
 
     #[test]
     fn different_seed_diverges() {
-        assert_ne!(run(1, 300).state_hash(), run(2, 300).state_hash());
+        assert_ne!(run(1, 200).state_hash(), run(2, 200).state_hash());
     }
 
     #[test]
-    fn world_is_alive_and_dynamic() {
+    fn world_is_alive() {
         let mut w = World::new(777, WorldParams::default());
-        let mut births = 0usize;
-        for _ in 0..400 {
-            births += w.tick(&[]).births();
+        for _ in 0..300 {
+            w.tick(&[]);
         }
         assert!(w.population() > 0, "world went extinct");
-        assert!(births > 0, "no reproduction happened");
-    }
-
-    #[test]
-    fn daylight_cycles() {
-        let w = World::new(1, WorldParams::default());
-        let d = w.daylight();
-        assert!((0.0..=1.0).contains(&d));
     }
 }

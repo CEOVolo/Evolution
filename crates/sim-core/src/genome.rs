@@ -148,7 +148,11 @@ pub fn develop(g: &Genome) -> Phenotype {
         }
     }
     Phenotype {
-        size: compose(1.0, acc[Channel::Size as usize], 0.4, 2.2),
+        // A single cell's size is capped low: real cells hit a surface-area-to-volume limit, so
+        // getting bigger than this ceiling is only possible by becoming MULTICELLULAR. Under
+        // predation (big = uneatable), that makes multicellularity the escape route to largeness,
+        // rather than a harder alternative to just growing one big cell.
+        size: compose(0.9, acc[Channel::Size as usize], 0.4, 1.3),
         metabolism: compose(1.0, acc[Channel::Metabolism as usize], 0.3, 2.0),
         repro: compose(1.0, acc[Channel::Repro as usize], 0.5, 1.5),
         habitat: compose(0.5, acc[Channel::Habitat as usize], 0.0, 1.0),
@@ -380,10 +384,10 @@ mod tests {
         };
         let pa = develop(&a);
         let pb = develop(&b);
-        // Sum of Size mods = 200 milli → size = 1.2; order must not matter.
+        // Sum of Size mods = 200 milli → size = base 0.9 + 0.2 = 1.1; order must not matter.
         assert_eq!(pa.size.to_bits(), pb.size.to_bits());
         assert_eq!(pa.diet.to_bits(), pb.diet.to_bits());
-        assert!((pa.size - 1.2).abs() < 1e-6);
+        assert!((pa.size - 1.1).abs() < 1e-6);
     }
 
     #[test]
@@ -463,8 +467,9 @@ mod tests {
             ],
         };
         let ph = develop(&g);
-        // Traits unaffected by chemistry genes: Size TraitMod 500 milli → 1.5.
-        assert!((ph.size - 1.5).abs() < 1e-6);
+        // Traits unaffected by chemistry genes: Size TraitMod 500 milli → base 0.9 + 0.5 = 1.4,
+        // clamped to the single-cell size ceiling of 1.3.
+        assert!((ph.size - 1.3).abs() < 1e-6);
         // Chemistry genes develop into roles.
         assert_eq!(ph.emit_ch[0], 200);
         assert_eq!(ph.uptake_ch[0], 150);

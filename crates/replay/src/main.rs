@@ -56,37 +56,36 @@ fn main() {
         deaths += ev.deaths();
         while cp < checkpoints.len() && checkpoints[cp] == t {
             println!(
-                "tick={t} pop={} brain={:.1} hash={:016x}",
+                "tick={t} pop={} body={:.1} hash={:016x}",
                 w.population(),
-                avg_complexity(&w),
+                avg_body(&w),
                 w.state_hash()
             );
             cp += 1;
         }
     }
+    let (dol_mean, dol_max) = dol(&w);
+    let (da, dg, db) = diet_split(&w);
+    let (hw, hs, hl) = habitat_split(&w);
+    // Emergence readout: body = mean cells/body, maxbody = biggest body, DOL = division-of-labor
+    // index, diff% = bodies with >=2 cell-types; diet/hab = dietary + habitat niches (Stage 2).
     println!(
-        "final seed={seed} ticks={ticks} pop={} brain={:.1} carn={:.0}% div={:.2} diet={:.2} A/gen/B={}/{}/{} chem(em/up/res/sen)={}/{}/{}/{} adh={:.3} bonds={} maxbody={} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} regnet={:.1} body={:.1} maxbody={} DOL={:.3}/{:.3} diff%={:.0} div={:.2} diet(A/g/B)={da}/{dg}/{db} hab(w/s/l)={hw}/{hs}/{hl} births={births} deaths={deaths} hash={:016x}",
         w.population(),
         avg_complexity(&w),
-        carn_frac(&w) * 100.0,
-        diversity(&w),
-        avg_diet(&w),
-        diet_split(&w).0,
-        diet_split(&w).1,
-        diet_split(&w).2,
-        chem_roles(&w).0,
-        chem_roles(&w).1,
-        chem_roles(&w).2,
-        chem_roles(&w).3,
-        avg_adhesion(&w),
-        w.bonds.len(),
+        avg_regnet(&w),
+        avg_body(&w),
         max_body(&w),
+        dol_mean,
+        dol_max,
+        diff_frac(&w) * 100.0,
+        diversity(&w),
         w.state_hash()
     );
 }
 
-/// Ecology sweep: score corners of the parameter space on survival, trophic depth, and
-/// phenotype diversity, to steer the shipped presets toward the viable region (Phase 0.5).
+/// Ecology sweep: score corners of the parameter space on survival, body size, and lineage
+/// diversity, to steer the shipped presets toward the viable region.
 #[allow(clippy::field_reassign_with_default)]
 fn run_sweep() {
     let regrows = [4i64, 8, 12, 16];
@@ -100,7 +99,7 @@ fn run_sweep() {
     for &rg in &regrows {
         for &ea in &eats {
             for &ba in &basals {
-                let (mut pop_sum, mut carn_sum, mut div_sum, mut surv) = (0.0, 0.0, 0.0, 0u32);
+                let (mut pop_sum, mut body_sum, mut div_sum, mut surv) = (0.0, 0.0, 0.0, 0u32);
                 for &sd in &seeds {
                     let mut p = WorldParams::default();
                     p.field_regrow = rg;
@@ -114,14 +113,14 @@ fn run_sweep() {
                         surv += 1;
                     }
                     pop_sum += w.population() as f64;
-                    carn_sum += carn_frac(&w) as f64;
+                    body_sum += avg_body(&w) as f64;
                     div_sum += diversity(&w) as f64;
                 }
                 let pop = pop_sum / ns;
-                let carn = carn_sum / ns * 100.0;
+                let body = body_sum / ns;
                 let div = div_sum / ns;
-                let viable = surv as usize == seeds.len() && carn > 2.0 && div > 1.0;
-                rows.push((rg, ea, ba, surv, pop, carn, div, viable));
+                let viable = surv as usize == seeds.len() && div > 0.5;
+                rows.push((rg, ea, ba, surv, pop, body, div, viable));
             }
         }
     }
@@ -132,10 +131,10 @@ fn run_sweep() {
         rows.len(),
         seeds.len()
     );
-    println!("regrow  eat basal | surv   pop  carn%  diversity  viable");
-    for (rg, ea, ba, surv, pop, carn, div, viable) in rows {
+    println!("regrow  eat basal | surv   pop  body  diversity  viable");
+    for (rg, ea, ba, surv, pop, body, div, viable) in rows {
         println!(
-            "{rg:>6} {ea:>4} {ba:>5} | {surv}/{}  {pop:>5.0} {carn:>5.1}%  {div:>7.2}   {}",
+            "{rg:>6} {ea:>4} {ba:>5} | {surv}/{}  {pop:>5.0} {body:>5.1}  {div:>7.2}   {}",
             seeds.len(),
             if viable { "yes" } else { "" }
         );
@@ -158,26 +157,121 @@ fn avg_complexity(w: &World) -> f32 {
     }
 }
 
-/// Mean digestion gene (0 = all food-A specialists, 1 = all food-B). ~0.5 with a wide spread
-/// means both niches are occupied; near 0 or 1 means one food won.
-fn avg_diet(w: &World) -> f32 {
+fn avg_regnet(w: &World) -> f32 {
     let o = &w.orgs;
-    let (mut s, mut n) = (0.0f32, 0u32);
+    let (mut s, mut n) = (0u64, 0u64);
     for i in 0..o.capacity() {
         if o.alive[i] {
-            s += o.g_diet[i];
+            s += o.regnets[i].complexity() as u64;
             n += 1;
         }
     }
     if n == 0 {
         0.0
     } else {
-        s / n as f32
+        s as f32 / n as f32
     }
 }
 
-/// Diet niche split: (food-A specialists `d<0.35`, generalists, food-B specialists `d>0.65`).
-/// Two full buckets = the population found two dietary niches instead of one blur.
+/// Mean cells per body — how multicellular the population has become (1 = single cells).
+fn avg_body(w: &World) -> f32 {
+    let o = &w.orgs;
+    let (mut s, mut n) = (0u64, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            s += o.bodies[i].cells.len() as u64;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        s as f32 / n as f32
+    }
+}
+
+/// The biggest body (most cells) alive.
+fn max_body(w: &World) -> u32 {
+    let o = &w.orgs;
+    let mut mx = 0u32;
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            let k = o.bodies[i].cells.len() as u32;
+            if k > mx {
+                mx = k;
+            }
+        }
+    }
+    mx
+}
+
+/// Division-of-labor index (mean, max over bodies): mean pairwise divergence of cells' role
+/// vectors within a body, normalized to [0, 1]. 0 = every cell identical, 1 = fully specialized —
+/// the headline "did a new organism-level property emerge" detector.
+fn dol(w: &World) -> (f32, f32) {
+    let o = &w.orgs;
+    let (mut sum, mut n, mut mx) = (0.0f32, 0u32, 0.0f32);
+    for i in 0..o.capacity() {
+        if !o.alive[i] {
+            continue;
+        }
+        let cells = &o.bodies[i].cells;
+        if cells.len() < 2 {
+            continue;
+        }
+        let (mut d, mut pairs) = (0.0f32, 0u32);
+        for a in 0..cells.len() {
+            for b in (a + 1)..cells.len() {
+                let df = (cells[a].role_feed - cells[b].role_feed).abs() as f32;
+                let ds = (cells[a].role_struct - cells[b].role_struct).abs() as f32;
+                d += (df + ds) / 2000.0;
+                pairs += 1;
+            }
+        }
+        let bdol = if pairs > 0 { d / pairs as f32 } else { 0.0 };
+        sum += bdol;
+        n += 1;
+        if bdol > mx {
+            mx = bdol;
+        }
+    }
+    if n == 0 {
+        (0.0, 0.0)
+    } else {
+        (sum / n as f32, mx)
+    }
+}
+
+/// Fraction of multi-cell bodies that carry at least two distinct cell-types (role vectors
+/// quantized into a coarse grid) — a body is "differentiated" if it isn't uniform.
+fn diff_frac(w: &World) -> f32 {
+    let o = &w.orgs;
+    let (mut diff, mut n) = (0u32, 0u32);
+    for i in 0..o.capacity() {
+        if !o.alive[i] {
+            continue;
+        }
+        let cells = &o.bodies[i].cells;
+        if cells.len() < 2 {
+            continue;
+        }
+        n += 1;
+        let mut types = std::collections::BTreeSet::new();
+        for c in cells {
+            types.insert((c.role_feed / 250, c.role_struct / 250));
+        }
+        if types.len() >= 2 {
+            diff += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        diff as f32 / n as f32
+    }
+}
+
+/// Dietary niche split over bodies: (food-A specialists `d<0.35`, generalists, food-B `d>0.65`).
 fn diet_split(w: &World) -> (u32, u32, u32) {
     let o = &w.orgs;
     let (mut a, mut g, mut b) = (0u32, 0u32, 0u32);
@@ -196,116 +290,39 @@ fn diet_split(w: &World) -> (u32, u32, u32) {
     (a, g, b)
 }
 
-/// Count organisms carrying each chemical role — how many emit, uptake, resist, sense any
-/// channel. Two of these overlapping on one channel (emit + uptake) is cross-feeding forming.
-fn chem_roles(w: &World) -> (u32, u32, u32, u32) {
+/// Habitat niche split over bodies: (water `h<0.4`, shore, land `h>0.6`).
+fn habitat_split(w: &World) -> (u32, u32, u32) {
     let o = &w.orgs;
-    let (mut em, mut up, mut re, mut se) = (0u32, 0u32, 0u32, 0u32);
+    let (mut water, mut shore, mut land) = (0u32, 0u32, 0u32);
     for i in 0..o.capacity() {
         if o.alive[i] {
-            if o.emit_ch[i].iter().any(|&x| x > 0) {
-                em += 1;
-            }
-            if o.uptake_ch[i].iter().any(|&x| x > 0) {
-                up += 1;
-            }
-            if o.resist_mask[i] != 0 {
-                re += 1;
-            }
-            if o.sense_mask[i] != 0 {
-                se += 1;
+            let h = o.g_habitat[i];
+            if h < 0.4 {
+                water += 1;
+            } else if h > 0.6 {
+                land += 1;
+            } else {
+                shore += 1;
             }
         }
     }
-    (em, up, re, se)
+    (water, shore, land)
 }
 
-/// Average `adhesion` trait over living cells — how sticky the population has become (0 = never
-/// bond). The heritable driver of bodies; watch it drift up if clumping is being selected for.
-fn avg_adhesion(w: &World) -> f32 {
-    let o = &w.orgs;
-    let (mut s, mut n) = (0.0f32, 0u32);
-    for i in 0..o.capacity() {
-        if o.alive[i] {
-            s += o.g_adhesion[i];
-            n += 1;
-        }
-    }
-    if n == 0 {
-        0.0
-    } else {
-        s / n as f32
-    }
-}
-
-/// The largest **body**: the biggest connected cluster of bonded cells. `1` = no bodies (every
-/// cell is a loner). This is the headline emergence detector for M3 — a persistent value above a
-/// few, reproducible across seeds, is genuine multicellularity; noise near 1 means it hasn't paid.
-fn max_body(w: &World) -> u32 {
-    let cap = w.orgs.capacity();
-    // union-find over slots, joined by each valid bond; then the largest component among live cells
-    let mut parent: Vec<u32> = (0..cap as u32).collect();
-    fn find(parent: &mut [u32], mut x: u32) -> u32 {
-        while parent[x as usize] != x {
-            parent[x as usize] = parent[parent[x as usize] as usize];
-            x = parent[x as usize];
-        }
-        x
-    }
-    let o = &w.orgs;
-    for b in &w.bonds {
-        // only count bonds whose endpoints are still the same live cells (a partner may have died
-        // and had its slot recycled later in the tick, before the next prune re-validates)
-        let (sa, sb) = (b.sa as usize, b.sb as usize);
-        if !(o.alive[sa] && o.id[sa] == b.ida && o.alive[sb] && o.id[sb] == b.idb) {
-            continue;
-        }
-        let (a, c) = (find(&mut parent, b.sa), find(&mut parent, b.sb));
-        if a != c {
-            parent[a as usize] = c;
-        }
-    }
-    let mut size = vec![0u32; cap];
-    let mut best = 0u32;
-    for i in 0..cap {
-        if w.orgs.alive[i] {
-            let r = find(&mut parent, i as u32) as usize;
-            size[r] += 1;
-            if size[r] > best {
-                best = size[r];
-            }
-        }
-    }
-    best
-}
-
-fn carn_frac(w: &World) -> f32 {
-    let o = &w.orgs;
-    let (mut c, mut n) = (0u32, 0u32);
-    for i in 0..o.capacity() {
-        if o.alive[i] {
-            n += 1;
-            if o.carnivory[i] > 0.12 {
-                c += 1;
-            }
-        }
-    }
-    if n == 0 {
-        0.0
-    } else {
-        c as f32 / n as f32
-    }
-}
-
+/// Shannon diversity of lineage colours (coarse RGB bins) over bodies — rough species spread.
 fn diversity(w: &World) -> f32 {
     let o = &w.orgs;
     let mut bins = [0u32; 64];
     let mut n = 0u32;
     for i in 0..o.capacity() {
         if o.alive[i] {
-            let b = ((o.cr[i] as usize >> 6) << 4)
-                | ((o.cg[i] as usize >> 6) << 2)
-                | (o.cb[i] as usize >> 6);
+            let cells = &o.bodies[i].cells;
+            if cells.is_empty() {
+                continue;
+            }
+            let c0 = cells[0];
+            let b =
+                ((c0.cr as usize >> 6) << 4) | ((c0.cg as usize >> 6) << 2) | (c0.cb as usize >> 6);
             bins[b] += 1;
             n += 1;
         }

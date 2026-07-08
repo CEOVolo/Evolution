@@ -23,8 +23,11 @@ pub mod subsystem {
     pub const TERRAIN: u64 = 4;
     pub const ELEVATION: u64 = 5;
     pub const GENOME: u64 = 6;
-    /// Incomplete-division roll: does a newborn stay physically bonded to its parent?
+    /// Incomplete-division roll: does a newborn stay physically bonded to its parent? (retired
+    /// with the M3 bond system, kept reserved so ids are never renumbered).
     pub const ADHESION: u64 = 7;
+    /// Development: per-body polarity axis + division asymmetry (keyed by organism id).
+    pub const DEVELOP: u64 = 8;
 }
 
 /// PCG-XSH-RR 64/32. Small, portable, fully deterministic.

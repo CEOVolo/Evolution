@@ -17,19 +17,20 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // + M3 emergent bodies: an `adhesion` trait channel (founder standing variation), cell↔cell
-    // bonds via incomplete division, bond spring physics, and gape-limited predation on bonded
-    // lumps. N_CHANNELS 8→9 and the founder adhesion draw shift the RNG. Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0x907f_aa9b_e98e_8ff0, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0x8754_5615_71bd_b7fe, "seed=1 tick=500");
+    // Stage 2: emergent bodies (founders single-celled) + the base ecology re-added as body-level
+    // functions — two foods with a dietary trade-off, and a water/land habitat cost. The world is
+    // still (near-)unicellular at these early checkpoints and grows multicellular later.
+    // Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0x81c0_8b93_a8a2_8ef9, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x1e1e_1f92_3a96_0956, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x64a5_26a7_8564_7a33,
+        0xba48_9e9e_6e58_9fc1,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x3edd_a204_affb_395d,
+        0x3b46_9442_a198_dd0c,
         "seed=2 tick=2000"
     );
 }

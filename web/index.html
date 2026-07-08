@@ -131,7 +131,7 @@
           <button id="reset" title="Начать новый мир с другим случайным зерном">↻ Новый мир</button>
         </div>
         <div class="tb"><label for="speed">скорость</label>
-          <input id="speed" type="range" min="1" max="20" value="4" title="Сколько шагов симуляции за кадр" /></div>
+          <input id="speed" type="range" min="1" max="20" value="2" title="Сколько шагов симуляции за кадр" /></div>
         <div class="tb"><label for="preset">старт</label>
           <select id="preset" title="Готовые наборы условий мира"></select></div>
         <div class="tb"><label for="brush">мышь</label>
@@ -154,65 +154,42 @@
 
       <div id="settings" class="hidden">
         <h3>Параметры мира</h3>
-        <div class="frow"><label title="Насколько сильно гены меняются у потомков">Мутации</label>
+        <div class="frow"><label title="Насколько сильно гены (в т.ч. программа развития) меняются у потомков">Мутации</label>
           <input id="mut" type="range" min="0" max="2000" value="1000" /></div>
         <div class="frow"><label title="Как быстро отрастает съеденная еда">Реген еды</label>
           <input id="regrow" type="range" min="0" max="30" value="6" /></div>
-        <div class="frow"><label title="Сколько энергии клетка забирает за укус">Аппетит</label>
+        <div class="frow"><label title="Сколько энергии клетка тела забирает с еды">Аппетит</label>
           <input id="eat" type="range" min="5" max="150" value="60" /></div>
-        <div class="frow"><label title="Насколько сильно чужая среда (особенно глубокая вода) высасывает энергию — сила барьера">Суровость среды</label>
-          <input id="habcost" type="range" min="0" max="300" value="90" /></div>
-        <div class="frow"><label title="Как часто сам собой возникает временный всплеск еды (событие). 0 = никогда — тогда вспышки только по твоему клику кистью «☀ Вспышка еды».">Случайные вспышки</label>
+        <div class="frow"><label title="Сила хищничества: крупное тело ест мелкое при касании. Это давление, под которым многоклеточность (крупнее → несъедобнее) окупается. Крути выше — многоклеточность возникает быстрее и надёжнее.">Хищничество</label>
+          <input id="bite" type="range" min="0" max="200" value="85" /></div>
+        <div class="frow"><label title="Как часто сам собой возникает временный всплеск еды. 0 = только по клику кистью «☀ Вспышка еды».">Случайные вспышки</label>
           <input id="bloomrate" type="range" min="0" max="100" value="0" /></div>
-        <div class="frow"><label title="Сила слипания клеток в тела (M3). Склонность слипаться — наследуемый ген, а это общая физика: выше = тела держатся крепче. Тела не получают никаких бонусов — они выживают только через физику (укрытие от хищника размером всего «комка») против платы за скученность.">Слипание (тела)</label>
-          <input id="bondstiff" type="range" min="0" max="600" value="150" /></div>
       </div>
 
       <aside id="drawer">
         <div class="drawer-body">
           <div class="card">
-            <h2>Слои <span class="help" title="Смотри по одному слою, а не всё сразу. Фон — что показать на карте (еда, рельеф, отдельное вещество). Красить — как раскрасить клетки (род, рацион, среда, или роль в показанном веществе).">ⓘ</span></h2>
-            <div class="row"><label>фон карты</label>
-              <select id="layer">
-                <option value="nature">🌿 природа (всё)</option>
-                <option value="foodA">🟢 еда A</option>
-                <option value="foodB">🟠 еда B</option>
-                <option value="relief">⛰ рельеф/вода</option>
-              </select></div>
-            <div class="row"><label>красить клетки</label>
-              <select id="colorby">
-                <option value="lineage">род (гены цвета)</option>
-                <option value="diet">рацион (A/B/хищник)</option>
-                <option value="habitat">среда (вода/суша)</option>
-                <option value="chem">роль в веществе</option>
-              </select></div>
-            <div id="layerlegend" style="margin-top:8px;font-size:12px;color:var(--muted2)">—</div>
-          </div>
-
-          <div class="card">
             <h2>Что я вижу?</h2>
             <div class="explain">
-              Каждая <b>точка</b> — живая клетка со своим <b>мозгом-нейросетью</b>: сама решает, куда плыть,
-              есть ли и <b>охотиться ли</b>. <b>Зелёная дымка</b> — еда. Кто крупнее, <b>съест тех, кто мельче</b>
-              (хищники — с красным ободком). Всё наследуется и мутирует — никто не задавал заранее, кто станет
-              травоядным, а кто хищником. <b>Синее — вода.</b> У клетки есть ген «среда»: не совпал с местом —
-              теряет энергию, поэтому глубокая вода <b>делит мир на ареалы</b>, и кто-то приспособится жить в
-              воде, кто-то выйдет на сушу — <b>сам, отбором</b>.
+              Каждый <b>«пузырь»</b> — многоклеточный <b>организм</b>: его тело <b>выросло из одного генома</b>
+              программой развития (нейросеть-регулятор гоняется в каждой клетке по её локальному контексту —
+              градиентам морфогенов и положению). Клетки <b>различаются по положению</b>: одни становятся
+              <b>кормовыми</b> (зелёные), другие — <b>структурными/защитными</b> (сланцевые). Всё тело живёт на
+              <b>общем котле энергии</b>, движется и размножается как единое целое. Форму, размер и разделение
+              труда <b>никто не задавал</b> — они возникают под отбором.
             </div>
           </div>
 
           <div class="card">
-            <h2>Легенда</h2>
-            <div class="legend">
-              <span><span class="sw" style="background:#1a7d2e"></span>зелёная дымка — еда A</span>
-              <span><span class="sw" style="background:#c98a2e"></span>янтарная дымка — еда B (другой корм)</span>
-              <span><span class="sw" style="background:#2f6fb0"></span>синее — вода (барьер между ареалами)</span>
-              <span><span class="sw" style="background:radial-gradient(circle,#8ce68c,rgba(140,230,140,0))"></span>зелёное свечение — вспышка еды (временное событие)</span>
-              <span><span class="sw" style="background:#78ffe1"></span>бирюзовые нити — связи в теле (слипшиеся клетки)</span>
-              <span><span class="sw" style="background:#e0e0e0"></span>точка — живая клетка</span>
-              <span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — её гены</span>
-              <span><span class="sw" style="background:#ff3c3c"></span>красный ободок — сейчас хищничает</span>
-            </div>
+            <h2>Красить клетки</h2>
+            <div class="row"><label>режим цвета</label>
+              <select id="colorby">
+                <option value="role">роль (кормовые/защитные)</option>
+                <option value="diet">рацион (еда A/B)</option>
+                <option value="habitat">среда (вода/суша)</option>
+                <option value="lineage">род (гены цвета)</option>
+              </select></div>
+            <div id="colorlegend" style="margin-top:8px" class="legend"></div>
           </div>
 
           <div class="card">
@@ -221,55 +198,47 @@
           </div>
 
           <div class="card">
-            <h2>Эволюция в цифрах <span class="help" title="Средние гены живых клеток. Смотри, как они уплывают со временем — это естественный отбор.">ⓘ</span></h2>
-            <div class="bars">
-              <div class="bar"><div class="lab"><span>размер тела</span><b id="a-size">—</b></div><div class="track"><div id="b-size"></div></div></div>
-              <div class="bar"><div class="lab"><span>обмен веществ</span><b id="a-metab">—</b></div><div class="track"><div id="b-metab"></div></div></div>
-              <div class="bar"><div class="lab"><span>порог размножения</span><b id="a-repro">—</b></div><div class="track"><div id="b-repro"></div></div></div>
-              <div class="bar"><div class="lab"><span>хищность 🔴</span><b id="a-carn">—</b></div><div class="track"><div id="b-carn"></div></div></div>
+            <h2>Тела <span class="help" title="Насколько многоклеточны организмы и есть ли разделение труда. DOL = индекс разделения труда (0 — все клетки одинаковы, 1 — полностью специализированы). Различ.% — доля тел с ≥2 типами клеток.">ⓘ</span></h2>
+            <div class="row mono stat"><span>клеток в теле (сред.)</span><b id="a-body">—</b></div>
+            <div class="row mono stat"><span>крупнейшее тело</span><b id="a-maxbody">—</b></div>
+            <div class="bars" style="margin-top:8px">
+              <div class="bar"><div class="lab"><span>разделение труда (DOL)</span><b id="a-dol">—</b></div><div class="track"><div id="b-dol"></div></div></div>
+              <div class="bar"><div class="lab"><span>различённые тела</span><b id="a-diff">—</b></div><div class="track"><div id="b-diff"></div></div></div>
             </div>
-            <div class="row mono stat" style="margin-top:10px"><span>сложность мозга 🧠</span><b id="a-brain">—</b></div>
-            <div class="row mono stat"><span>длина генома 🧬</span><b id="a-genes">—</b></div>
           </div>
 
           <div class="card">
-            <h2>Здоровье мира <span class="help" title="Сколько хищников, насколько разнообразны клетки, много ли двигаются, и от чего умирают.">ⓘ</span></h2>
-            <div class="bars">
-              <div class="bar"><div class="lab"><span>доля хищников 🔴</span><b id="a-troph">—</b></div><div class="track"><div id="b-troph"></div></div></div>
-              <div class="bar"><div class="lab"><span>разнообразие</span><b id="a-div">—</b></div><div class="track"><div id="b-div"></div></div></div>
-              <div class="bar"><div class="lab"><span>подвижность</span><b id="a-move">—</b></div><div class="track"><div id="b-move"></div></div></div>
-            </div>
+            <h2>Ниши <span class="help" title="Организмы делятся на пищевые (еда A / всеядные / еда B) и средовые (вода / берег / суша) ниши. Два-три занятых столбца = мир не монокультура.">ⓘ</span></h2>
+            <div style="font-size:12px;color:var(--muted2)">рацион (🟢 A · всеяд · 🟠 B)</div>
+            <div id="diet" class="mono" style="margin:5px 0 10px;font-size:12.5px;color:var(--ink)">—</div>
+            <div style="font-size:12px;color:var(--muted2)">среда (вода · берег · суша)</div>
+            <div id="habitat" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
+          </div>
+
+          <div class="card">
+            <h2>Эволюция в цифрах <span class="help" title="Средние по живым организмам. Смотри, как они уплывают со временем — это отбор.">ⓘ</span></h2>
+            <div class="row mono stat"><span>сложность мозга 🧠</span><b id="a-brain">—</b></div>
+            <div class="row mono stat"><span>программа развития 🧬</span><b id="a-regnet">—</b></div>
+            <div class="row mono stat"><span>длина генома</span><b id="a-genes">—</b></div>
+            <div class="row mono stat"><span>разнообразие родов</span><b id="a-div">—</b></div>
+            <div class="row mono stat"><span>подвижность</span><b id="a-move">—</b></div>
             <div style="margin-top:11px;font-size:12px;color:var(--muted2)">причины смерти (за кадр)</div>
             <div id="deaths" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
-            <div style="margin-top:11px;font-size:12px;color:var(--muted2)">кто где приспособлен (ген «среда»)</div>
-            <div id="habitat" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
-            <div style="margin-top:11px;font-size:12px;color:var(--muted2)">кто что ест (🟢 A · 🍽 всеяд · 🟠 B)</div>
-            <div id="diet" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
           </div>
 
           <div class="card">
-            <h2>Популяции <span class="help" title="Группы по наследуемой окраске — грубые «виды». Кликни группу — где живёт и чем питается.">ⓘ</span></h2>
-            <div id="species" style="display:flex;flex-direction:column;gap:4px;font-size:12.5px">—</div>
-          </div>
-
-          <div class="card">
-            <h2>Химия <span class="help" title="Общие вещества, чьё значение НЕ задано. Гены сами решают: выделять (выд), поглощать в еду (погл), быть устойчивым к яду (уст), чувствовать (чув). Если по веществу есть И выделение, И поглощение — возник кросс-фидинг (отходы одних = еда других). Выделение + устойчивость — химическая война/детокс.">ⓘ</span></h2>
-            <div id="chem" style="display:flex;flex-direction:column;gap:4px;font-size:12px">—</div>
-          </div>
-
-          <div class="card">
-            <h2>Рекордсмены <span class="help" title="Самые выдающиеся клетки прямо сейчас. Кликни — камера полетит за ней.">ⓘ</span></h2>
-            <div id="records" style="display:flex;flex-direction:column;gap:4px;font-size:12.5px">—</div>
+            <h2>Роды <span class="help" title="Группы организмов по наследуемой окраске (генам цвета) — грубые «роды»/виды. Для каждого: сколько особей, средний размер тела (клеток), сложность мозга и разделение труда. Смотри, как роды возникают, растут и вымирают.">ⓘ</span></h2>
+            <div id="species" style="display:flex;flex-direction:column;gap:5px;font-size:12.5px">—</div>
           </div>
         </div>
       </aside>
 
       <div id="inspect">
-        <h2>Инспектор клетки</h2>
-        <div class="empty" id="inspect-body">Наведи курсор на точку (или кликни — следить).</div>
+        <h2>Инспектор организма</h2>
+        <div class="empty" id="inspect-body">Наведи курсор на организм (или кликни — следить).</div>
       </div>
 
-      <div class="hint" id="hint">колесо — зум · тащи — панорама · клик по клетке — следить · 2×клик — сброс вида</div>
+      <div class="hint" id="hint">колесо — зум · тащи — панорама · клик по телу — следить · 2×клик — сброс вида</div>
       <div id="toasts"></div>
     </div>
     <script type="module" src="/src/main.js"></script>

@@ -1,12 +1,18 @@
 //! Organism storage — Structure-of-Arrays with a stable-id free-list slotmap.
 //!
-//! Fixed-width scalar columns plus a per-organism [`Brain`] (variable-topology, so it lives
-//! in its own `Vec<Brain>` column rather than a flat stride). Iteration is index-ordered;
-//! ties break by stable `id`. Slots are reused from a LIFO free-list on death.
+//! The unit of life is a whole **organism**: one authoritative genome, one behavioural brain, one
+//! developmental network ([`RegNet`]), a single shared energy pool, a world position + heading,
+//! and a **body** — a cluster of differentiated cells grown from the genome at birth by
+//! [`develop_body`]. The body and the developed global traits (`g_*`, `mass_milli`) are *derived*
+//! state: they are rebuilt from the heritable {genome, regnet} at insert and on snapshot load, so
+//! they are never serialized. Iteration is index-ordered; slots are reused from a LIFO free-list
+//! on death and always get a fresh `id`.
 
-use crate::brain::{Brain, N_CHAN};
+use crate::brain::Brain;
+use crate::develop::{develop_body, Body};
 use crate::genome::{develop, Genome};
 use crate::math::Scalar;
+use crate::regnet::RegNet;
 
 #[derive(Clone, Default, Debug)]
 pub struct Organisms {
@@ -16,33 +22,33 @@ pub struct Organisms {
     pub py: Vec<Scalar>,
     pub vx: Vec<Scalar>,
     pub vy: Vec<Scalar>,
+    /// Unit heading vector (orientation): the body footprint is mapped through it each tick.
+    pub hx: Vec<Scalar>,
+    pub hy: Vec<Scalar>,
+    /// The one shared energy pool for the whole body.
     pub energy: Vec<i64>,
     pub age: Vec<u32>,
     pub parent: Vec<u32>,
     pub birth_tick: Vec<u64>,
-    pub g_size: Vec<Scalar>,
+    /// Developed whole-organism traits (from [`develop`]): metabolism and reproduction multipliers.
     pub g_metab: Vec<Scalar>,
     pub g_repro: Vec<Scalar>,
-    /// Preferred elevation (habitat) per organism; see [`Genome::habitat`].
-    pub g_habitat: Vec<Scalar>,
-    /// Digestion specialization per organism; see [`Genome::diet`].
+    /// Digestion specialization (Stage 2): 0 = food-A specialist, 1 = food-B; feeder cells eat
+    /// each food scaled by a convex trade-off, so the population splits into dietary niches.
     pub g_diet: Vec<Scalar>,
-    /// Stickiness per organism (M3): P(newborn stays bonded to parent); see [`Phenotype::adhesion`].
-    pub g_adhesion: Vec<Scalar>,
-    pub cr: Vec<u8>,
-    pub cg: Vec<u8>,
-    pub cb: Vec<u8>,
-    pub carnivory: Vec<Scalar>,
-    // --- developed chemical roles (M2); see [`crate::genome::Phenotype`] ---
-    pub sense_mask: Vec<u16>,
-    pub resist_mask: Vec<u16>,
-    pub emit_ch: Vec<[u8; N_CHAN]>,
-    pub uptake_ch: Vec<[u8; N_CHAN]>,
-    /// Per-organism growing brain.
+    /// Preferred elevation (Stage 2): a body pays energy where the local terrain mismatches this,
+    /// so deep water is a barrier and water vs land become distinct habitats.
+    pub g_habitat: Vec<Scalar>,
+    /// Total body mass in fixed-point milli-units (derived: Σ cell sizes). Drives accel + gape.
+    pub mass_milli: Vec<i64>,
+    /// Per-organism behavioural brain.
     pub brains: Vec<Brain>,
-    /// Per-organism open genome (the raw `Vec<Gene>`); the `g_*`/`c*` columns above are its
-    /// developed phenotype, recomputed at insert. This is the authoritative heritable state.
+    /// Per-organism developmental network (grows the body).
+    pub regnets: Vec<RegNet>,
+    /// Per-organism authoritative genome (global traits via `develop`).
     pub genomes: Vec<Genome>,
+    /// Per-organism developed body (derived; rebuilt at insert / on load, never serialized).
+    pub bodies: Vec<Body>,
 
     pub free: Vec<u32>,
     pub next_id: u32,
@@ -54,18 +60,23 @@ pub struct NewOrganism {
     pub py: Scalar,
     pub vx: Scalar,
     pub vy: Scalar,
+    pub hx: Scalar,
+    pub hy: Scalar,
     pub energy: i64,
     pub parent: u32,
     pub birth_tick: u64,
     pub genome: Genome,
     pub brain: Brain,
+    pub regnet: RegNet,
 }
 
 impl Organisms {
     pub fn with_capacity(cap: usize) -> Self {
         Organisms {
             brains: Vec::with_capacity(cap),
+            regnets: Vec::with_capacity(cap),
             genomes: Vec::with_capacity(cap),
+            bodies: Vec::with_capacity(cap),
             ..Default::default()
         }
     }
@@ -75,12 +86,15 @@ impl Organisms {
         self.alive.len()
     }
 
-    pub fn insert(&mut self, s: NewOrganism) -> (usize, u32) {
+    /// Insert one organism, developing its body from {genome, regnet}. `seed` keys the (per-body,
+    /// deterministic) development, so the same organism id always grows the same body — which is
+    /// what lets snapshot load re-develop bodies instead of serializing them.
+    pub fn insert(&mut self, seed: u64, s: NewOrganism) -> (usize, u32) {
         let id = self.next_id;
         self.next_id += 1;
-        // Compile the genome into its phenotype once; the `g_*`/`c*` columns are develop()'s
-        // output (what `step_organism` reads), while the raw genome is stored authoritatively.
         let ph = develop(&s.genome);
+        let body = develop_body(&s.regnet, ph.size, (ph.r, ph.g, ph.b), seed, id);
+        let mass = body.mass_milli();
         let slot = if let Some(free) = self.free.pop() {
             let i = free as usize;
             self.alive[i] = true;
@@ -89,26 +103,21 @@ impl Organisms {
             self.py[i] = s.py;
             self.vx[i] = s.vx;
             self.vy[i] = s.vy;
+            self.hx[i] = s.hx;
+            self.hy[i] = s.hy;
             self.energy[i] = s.energy;
             self.age[i] = 0;
             self.parent[i] = s.parent;
             self.birth_tick[i] = s.birth_tick;
-            self.g_size[i] = ph.size;
             self.g_metab[i] = ph.metabolism;
             self.g_repro[i] = ph.repro;
-            self.g_habitat[i] = ph.habitat;
             self.g_diet[i] = ph.diet;
-            self.g_adhesion[i] = ph.adhesion;
-            self.cr[i] = ph.r;
-            self.cg[i] = ph.g;
-            self.cb[i] = ph.b;
-            self.carnivory[i] = 0.0;
-            self.sense_mask[i] = ph.sense_mask;
-            self.resist_mask[i] = ph.resist_mask;
-            self.emit_ch[i] = ph.emit_ch;
-            self.uptake_ch[i] = ph.uptake_ch;
+            self.g_habitat[i] = ph.habitat;
+            self.mass_milli[i] = mass;
             self.brains[i] = s.brain;
+            self.regnets[i] = s.regnet;
             self.genomes[i] = s.genome;
+            self.bodies[i] = body;
             i
         } else {
             self.alive.push(true);
@@ -117,26 +126,21 @@ impl Organisms {
             self.py.push(s.py);
             self.vx.push(s.vx);
             self.vy.push(s.vy);
+            self.hx.push(s.hx);
+            self.hy.push(s.hy);
             self.energy.push(s.energy);
             self.age.push(0);
             self.parent.push(s.parent);
             self.birth_tick.push(s.birth_tick);
-            self.g_size.push(ph.size);
             self.g_metab.push(ph.metabolism);
             self.g_repro.push(ph.repro);
-            self.g_habitat.push(ph.habitat);
             self.g_diet.push(ph.diet);
-            self.g_adhesion.push(ph.adhesion);
-            self.cr.push(ph.r);
-            self.cg.push(ph.g);
-            self.cb.push(ph.b);
-            self.carnivory.push(0.0);
-            self.sense_mask.push(ph.sense_mask);
-            self.resist_mask.push(ph.resist_mask);
-            self.emit_ch.push(ph.emit_ch);
-            self.uptake_ch.push(ph.uptake_ch);
+            self.g_habitat.push(ph.habitat);
+            self.mass_milli.push(mass);
             self.brains.push(s.brain);
+            self.regnets.push(s.regnet);
             self.genomes.push(s.genome);
+            self.bodies.push(body);
             self.alive.len() - 1
         };
         self.count += 1;
@@ -151,7 +155,7 @@ impl Organisms {
         }
     }
 
-    /// The parent's raw genome, cloned to seed a child (which then mutates + develops it).
+    /// The parent's raw genome, cloned to seed a child.
     #[inline]
     pub fn genome_at(&self, i: usize) -> Genome {
         self.genomes[i].clone()
