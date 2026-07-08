@@ -65,10 +65,12 @@ fn main() {
         }
     }
     let (dol_mean, dol_max) = dol(&w);
+    let (da, dg, db) = diet_split(&w);
+    let (hw, hs, hl) = habitat_split(&w);
     // Emergence readout: body = mean cells/body, maxbody = biggest body, DOL = division-of-labor
-    // index (0 = all cells identical, 1 = fully specialized), diff% = bodies with >=2 cell-types.
+    // index, diff% = bodies with >=2 cell-types; diet/hab = dietary + habitat niches (Stage 2).
     println!(
-        "final seed={seed} ticks={ticks} pop={} brain={:.1} regnet={:.1} body={:.1} maxbody={} DOL={:.3}/{:.3} diff%={:.0} div={:.2} births={births} deaths={deaths} hash={:016x}",
+        "final seed={seed} ticks={ticks} pop={} brain={:.1} regnet={:.1} body={:.1} maxbody={} DOL={:.3}/{:.3} diff%={:.0} div={:.2} diet(A/g/B)={da}/{dg}/{db} hab(w/s/l)={hw}/{hs}/{hl} births={births} deaths={deaths} hash={:016x}",
         w.population(),
         avg_complexity(&w),
         avg_regnet(&w),
@@ -267,6 +269,44 @@ fn diff_frac(w: &World) -> f32 {
     } else {
         diff as f32 / n as f32
     }
+}
+
+/// Dietary niche split over bodies: (food-A specialists `d<0.35`, generalists, food-B `d>0.65`).
+fn diet_split(w: &World) -> (u32, u32, u32) {
+    let o = &w.orgs;
+    let (mut a, mut g, mut b) = (0u32, 0u32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            let d = o.g_diet[i];
+            if d < 0.35 {
+                a += 1;
+            } else if d > 0.65 {
+                b += 1;
+            } else {
+                g += 1;
+            }
+        }
+    }
+    (a, g, b)
+}
+
+/// Habitat niche split over bodies: (water `h<0.4`, shore, land `h>0.6`).
+fn habitat_split(w: &World) -> (u32, u32, u32) {
+    let o = &w.orgs;
+    let (mut water, mut shore, mut land) = (0u32, 0u32, 0u32);
+    for i in 0..o.capacity() {
+        if o.alive[i] {
+            let h = o.g_habitat[i];
+            if h < 0.4 {
+                water += 1;
+            } else if h > 0.6 {
+                land += 1;
+            } else {
+                shore += 1;
+            }
+        }
+    }
+    (water, shore, land)
 }
 
 /// Shannon diversity of lineage colours (coarse RGB bins) over bodies — rough species spread.

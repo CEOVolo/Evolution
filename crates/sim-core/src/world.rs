@@ -490,6 +490,11 @@ impl World {
         // scaled by its feeding role; the whole body shares one pool. Cells visited in canonical
         // order; all sums are i64 (exact, order-free). ---
         let eat_rate = p.eat_rate as f32;
+        // Diet trade-off (Stage 2): a specialist digests its food at full rate while a generalist
+        // is only ~¼ on each, so specialising strictly beats hedging → two dietary niches.
+        let diet = self.orgs.g_diet[i];
+        let da = 1.0 - diet;
+        let (ea, eb) = (da * da, diet * diet);
         let mut intake: i64 = 0;
         let mut struct_load: i64 = 0;
         let n_cells = self.orgs.bodies[i].cells.len() as i64;
@@ -506,12 +511,22 @@ impl World {
                 let fx = ((wx / cw) as i32).rem_euclid(gw);
                 let fy = ((wy / ch) as i32).rem_euclid(gh);
                 let fi = (fy * gw + fx) as usize;
-                let want = (eat_rate * metab * (FEED_BASE + FEED_GAIN * feed01)) as i64;
-                if want > 0 {
+                let want = eat_rate * metab * (FEED_BASE + FEED_GAIN * feed01);
+                let want_a = (want * ea) as i64;
+                if want_a > 0 {
                     let avail = self.field[fi];
-                    let got = if want < avail { want } else { avail };
+                    let got = if want_a < avail { want_a } else { avail };
                     if got > 0 {
                         self.field[fi] -= got;
+                        intake += got;
+                    }
+                }
+                let want_b = (want * eb) as i64;
+                if want_b > 0 {
+                    let avail = self.field_b[fi];
+                    let got = if want_b < avail { want_b } else { avail };
+                    if got > 0 {
+                        self.field_b[fi] -= got;
                         intake += got;
                     }
                 }
@@ -577,8 +592,19 @@ impl World {
             .hash
             .count_within(&self.orgs, i, sx, sy, p.crowd_radius);
         let crowd_cost = crowd as i64 * p.crowd_cost;
-        self.orgs.energy[i] -=
-            basal + size_cost + move_cost + brain_cost + regnet_cost + crowd_cost + struct_load;
+        // habitat mismatch (Stage 2): being where the local terrain doesn't fit the body's evolved
+        // `habitat` trait drains energy quadratically, so deep water is a barrier and adapting to
+        // water (or leaving it) is left to selection.
+        let mism = self.elevation[here] - self.orgs.g_habitat[i];
+        let habitat_cost = ((p.habitat_cost as f32) * mism * mism) as i64;
+        self.orgs.energy[i] -= basal
+            + size_cost
+            + move_cost
+            + brain_cost
+            + regnet_cost
+            + crowd_cost
+            + struct_load
+            + habitat_cost;
         self.orgs.age[i] += 1;
 
         // --- death (the whole body dies at once) ---
@@ -768,6 +794,8 @@ impl World {
             h.u64(o.birth_tick[i]);
             h.u32(canonical_bits(o.g_metab[i]));
             h.u32(canonical_bits(o.g_repro[i]));
+            h.u32(canonical_bits(o.g_diet[i]));
+            h.u32(canonical_bits(o.g_habitat[i]));
             let br = &o.brains[i];
             h.u32(br.n_hidden as u32);
             h.u32(br.conns.len() as u32);

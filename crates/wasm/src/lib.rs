@@ -214,6 +214,78 @@ impl Sim {
         v
     }
 
+    /// Per-cell diet of the owning body (0 = food-A specialist, 255 = food-B), in `cell_positions`
+    /// order — for the "colour by diet" layer.
+    pub fn cell_diets(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.n_cells());
+        for i in 0..o.capacity() {
+            if !o.alive[i] {
+                continue;
+            }
+            let d = (o.g_diet[i].clamp(0.0, 1.0) * 255.0) as u8;
+            for _ in &o.bodies[i].cells {
+                v.push(d);
+            }
+        }
+        v
+    }
+
+    /// Per-cell habitat preference of the owning body (0 = water, 255 = land), in `cell_positions`
+    /// order — for the "colour by habitat" layer.
+    pub fn cell_habitats(&self) -> Vec<u8> {
+        let o = &self.world.orgs;
+        let mut v = Vec::with_capacity(self.n_cells());
+        for i in 0..o.capacity() {
+            if !o.alive[i] {
+                continue;
+            }
+            let h = (o.g_habitat[i].clamp(0.0, 1.0) * 255.0) as u8;
+            for _ in &o.bodies[i].cells {
+                v.push(h);
+            }
+        }
+        v
+    }
+
+    /// Body-level dietary niche split `[food-A specialists, generalists, food-B specialists]`.
+    pub fn diet_hist(&self) -> Vec<u32> {
+        let o = &self.world.orgs;
+        let (mut a, mut g, mut b) = (0u32, 0u32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let d = o.g_diet[i];
+                if d < 0.35 {
+                    a += 1;
+                } else if d > 0.65 {
+                    b += 1;
+                } else {
+                    g += 1;
+                }
+            }
+        }
+        vec![a, g, b]
+    }
+
+    /// Body-level habitat niche split `[water, shore, land]`.
+    pub fn habitat_hist(&self) -> Vec<u32> {
+        let o = &self.world.orgs;
+        let (mut w, mut s, mut l) = (0u32, 0u32, 0u32);
+        for i in 0..o.capacity() {
+            if o.alive[i] {
+                let h = o.g_habitat[i];
+                if h < 0.4 {
+                    w += 1;
+                } else if h > 0.6 {
+                    l += 1;
+                } else {
+                    s += 1;
+                }
+            }
+        }
+        vec![w, s, l]
+    }
+
     /// Per-cell owning-organism id, matching `cell_positions` order — lets JS group cells into
     /// bodies to draw a membrane around each organism.
     pub fn cell_body_ids(&self) -> Vec<u32> {
@@ -533,6 +605,8 @@ impl Sim {
             o.brains[i].complexity() as f32,
             o.regnets[i].complexity() as f32,
             o.genomes[i].genes.len() as f32,
+            o.g_diet[i],
+            o.g_habitat[i],
         ]
     }
 }

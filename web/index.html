@@ -185,6 +185,8 @@
             <div class="row"><label>режим цвета</label>
               <select id="colorby">
                 <option value="role">роль (кормовые/защитные)</option>
+                <option value="diet">рацион (еда A/B)</option>
+                <option value="habitat">среда (вода/суша)</option>
                 <option value="lineage">род (гены цвета)</option>
               </select></div>
             <div id="colorlegend" style="margin-top:8px" class="legend"></div>
@@ -203,6 +205,14 @@
               <div class="bar"><div class="lab"><span>разделение труда (DOL)</span><b id="a-dol">—</b></div><div class="track"><div id="b-dol"></div></div></div>
               <div class="bar"><div class="lab"><span>различённые тела</span><b id="a-diff">—</b></div><div class="track"><div id="b-diff"></div></div></div>
             </div>
+          </div>
+
+          <div class="card">
+            <h2>Ниши <span class="help" title="Организмы делятся на пищевые (еда A / всеядные / еда B) и средовые (вода / берег / суша) ниши. Два-три занятых столбца = мир не монокультура.">ⓘ</span></h2>
+            <div style="font-size:12px;color:var(--muted2)">рацион (🟢 A · всеяд · 🟠 B)</div>
+            <div id="diet" class="mono" style="margin:5px 0 10px;font-size:12.5px;color:var(--ink)">—</div>
+            <div style="font-size:12px;color:var(--muted2)">среда (вода · берег · суша)</div>
+            <div id="habitat" class="mono" style="margin-top:5px;font-size:12.5px;color:var(--ink)">—</div>
           </div>
 
           <div class="card">

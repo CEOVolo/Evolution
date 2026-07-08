@@ -233,6 +233,12 @@ async function main() {
         '<span><span class="sw" style="background:rgb(90,235,110)"></span>зелёные — кормовые клетки</span>' +
         '<span><span class="sw" style="background:rgb(150,120,185)"></span>сланцевые — структурные/защитные</span>' +
         '<span><span class="sw" style="background:rgb(120,140,120)"></span>серо-зелёные — неспециализированные</span>';
+    } else if (colorBy === "diet") {
+      el.innerHTML =
+        '<span><span class="sw" style="background:#4bd66b"></span>🟢 еда A · <span class="sw" style="background:#e0a030"></span>🟠 еда B · <span class="sw" style="background:#8a9a8a"></span>всеядные</span>';
+    } else if (colorBy === "habitat") {
+      el.innerHTML =
+        '<span><span class="sw" style="background:#3f7fd0"></span>водные · <span class="sw" style="background:#4bb0a0"></span>берег · <span class="sw" style="background:#b98a4a"></span>сухопутные</span>';
     } else {
       el.innerHTML =
         '<span><span class="sw" style="background:linear-gradient(90deg,#e44,#4e4,#46f)"></span>цвет — гены рода организма</span>';
@@ -259,6 +265,8 @@ async function main() {
     const sz = sim.cell_sizes();
     const roles = colorBy === "role" ? sim.cell_roles() : null;
     const cols = colorBy === "lineage" ? sim.cell_colors() : null;
+    const dietA = colorBy === "diet" ? sim.cell_diets() : null;
+    const habA = colorBy === "habitat" ? sim.cell_habitats() : null;
     const n = p.length / 2;
 
     // pass 1 — membrane: a soft disc under each cell; overlapping cells of a body merge into a blob
@@ -280,7 +288,13 @@ async function main() {
       if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
       const rad = (1.4 + sz[m] * 1.3) * s;
       if (roles) ctx.fillStyle = roleColor(roles[m * 2] / 255, roles[m * 2 + 1] / 255);
-      else ctx.fillStyle = `rgb(${cols[m * 3]},${cols[m * 3 + 1]},${cols[m * 3 + 2]})`;
+      else if (dietA) {
+        const d = dietA[m];
+        ctx.fillStyle = d < 100 ? "#4bd66b" : d > 156 ? "#e0a030" : "#8a9a8a";
+      } else if (habA) {
+        const h = habA[m];
+        ctx.fillStyle = h < 100 ? "#3f7fd0" : h > 156 ? "#b98a4a" : "#4bb0a0";
+      } else ctx.fillStyle = `rgb(${cols[m * 3]},${cols[m * 3 + 1]},${cols[m * 3 + 2]})`;
       ctx.beginPath();
       ctx.arc(x, y, rad, 0, 6.283);
       ctx.fill();
@@ -372,15 +386,22 @@ async function main() {
     $("a-div").textContent = sim.diversity().toFixed(2);
     $("a-move").textContent = sim.avg_speed().toFixed(2);
 
+    const dh = sim.diet_hist();
+    $("diet").textContent = `🟢 ${dh[0]} · всеяд ${dh[1]} · 🟠 ${dh[2]}`;
+    const hh = sim.habitat_hist();
+    $("habitat").textContent = `🌊 ${hh[0]} · 🏖 ${hh[1]} · ⛰ ${hh[2]}`;
+
     const d = sim.deaths_recent();
-    $("deaths").textContent = `голод ${d[0]} · старость ${d[1]} · стёрты ${d[2]}`;
+    $("deaths").textContent = `голод ${d[0]} · старость ${d[1]} · съедены ${d[3]} · стёрты ${d[2]}`;
 
     if (followId !== null) updateFollow();
   }
 
   // --- inspector ---
   function bodyCard(info, tag) {
-    const [, , id, energy, age, ncells, dol, feed, strc, brain, regnet, genes] = info;
+    const [, , id, energy, age, ncells, dol, feed, strc, brain, regnet, genes, diet, habitat] = info;
+    const food = diet < 0.35 ? "🟢 еда A" : diet > 0.65 ? "🟠 еда B" : "🍽 всеядное";
+    const env = habitat < 0.4 ? "🌊 вода" : habitat > 0.6 ? "⛰ суша" : "🏖 берег";
     return `
       <div class="row" style="margin:0 0 8px">
         <span>организм #${id | 0}${tag}</span>
@@ -389,6 +410,8 @@ async function main() {
       <div class="row mono" style="margin:4px 0"><span>клеток в теле</span><b>🧫 ${ncells | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>разделение труда</span><b>DOL ${(+dol).toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>роли (сред.)</span><b>🟢 корм ${(feed * 100).toFixed(0)}% · 🟦 защита ${(strc * 100).toFixed(0)}%</b></div>
+      <div class="row mono" style="margin:4px 0"><span>рацион</span><b>${food} ${(+diet).toFixed(2)}</b></div>
+      <div class="row mono" style="margin:4px 0"><span>среда</span><b>${env} ${(+habitat).toFixed(2)}</b></div>
       <div class="row mono" style="margin:4px 0"><span>энергия (котёл)</span><b>${energy | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>мозг 🧠</span><b>${brain | 0}</b></div>
       <div class="row mono" style="margin:4px 0"><span>программа развития</span><b>${regnet | 0}</b></div>

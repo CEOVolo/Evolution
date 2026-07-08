@@ -20,7 +20,7 @@ const MAGIC: u32 = 0x45564F42; // "EVOB" (v13 — organism bodies)
 const VERSION: u16 = 13;
 /// Genome/development format version — bumped when the gene schema or `develop()` mapping
 /// changes, independently of the world `VERSION`.
-const GENOME_FORMAT_VERSION: u16 = 4;
+const GENOME_FORMAT_VERSION: u16 = 5;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
@@ -524,6 +524,8 @@ fn read_orgs(r: &mut Reader, seed: u64) -> Result<Organisms, SnapshotError> {
         let ph = develop(&gm);
         s.g_metab.push(ph.metabolism);
         s.g_repro.push(ph.repro);
+        s.g_diet.push(ph.diet);
+        s.g_habitat.push(ph.habitat);
         let body = if alive {
             develop_body(&regnet, ph.size, (ph.r, ph.g, ph.b), seed, id)
         } else {

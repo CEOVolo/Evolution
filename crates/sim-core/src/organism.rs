@@ -33,6 +33,12 @@ pub struct Organisms {
     /// Developed whole-organism traits (from [`develop`]): metabolism and reproduction multipliers.
     pub g_metab: Vec<Scalar>,
     pub g_repro: Vec<Scalar>,
+    /// Digestion specialization (Stage 2): 0 = food-A specialist, 1 = food-B; feeder cells eat
+    /// each food scaled by a convex trade-off, so the population splits into dietary niches.
+    pub g_diet: Vec<Scalar>,
+    /// Preferred elevation (Stage 2): a body pays energy where the local terrain mismatches this,
+    /// so deep water is a barrier and water vs land become distinct habitats.
+    pub g_habitat: Vec<Scalar>,
     /// Total body mass in fixed-point milli-units (derived: Σ cell sizes). Drives accel + gape.
     pub mass_milli: Vec<i64>,
     /// Per-organism behavioural brain.
@@ -105,6 +111,8 @@ impl Organisms {
             self.birth_tick[i] = s.birth_tick;
             self.g_metab[i] = ph.metabolism;
             self.g_repro[i] = ph.repro;
+            self.g_diet[i] = ph.diet;
+            self.g_habitat[i] = ph.habitat;
             self.mass_milli[i] = mass;
             self.brains[i] = s.brain;
             self.regnets[i] = s.regnet;
@@ -126,6 +134,8 @@ impl Organisms {
             self.birth_tick.push(s.birth_tick);
             self.g_metab.push(ph.metabolism);
             self.g_repro.push(ph.repro);
+            self.g_diet.push(ph.diet);
+            self.g_habitat.push(ph.habitat);
             self.mass_milli.push(mass);
             self.brains.push(s.brain);
             self.regnets.push(s.regnet);

@@ -17,20 +17,20 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // Stage 1 (emergent): founders are SINGLE cells (a founder RegNet cannot divide), a
-    // single-cell size ceiling + predation make being big pay, so multicellularity EVOLVES instead
-    // of being forced — the world is unicellular at these early checkpoints (body == 1.0) and
-    // grows multicellular later. Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0xd547_2569_27e2_5694, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0x1d35_f1f8_0460_4e65, "seed=1 tick=500");
+    // Stage 2: emergent bodies (founders single-celled) + the base ecology re-added as body-level
+    // functions — two foods with a dietary trade-off, and a water/land habitat cost. The world is
+    // still (near-)unicellular at these early checkpoints and grows multicellular later.
+    // Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0x81c0_8b93_a8a2_8ef9, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x1e1e_1f92_3a96_0956, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x9d81_695d_e8d7_9039,
+        0xba48_9e9e_6e58_9fc1,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0x1b77_101b_acd2_5091,
+        0x3b46_9442_a198_dd0c,
         "seed=2 tick=2000"
     );
 }
