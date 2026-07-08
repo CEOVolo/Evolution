@@ -483,6 +483,76 @@ impl Sim {
         Vec::new()
     }
 
+    /// Lineage groups ("роды") as a JSON array, sorted by count desc. Bodies are bucketed by their
+    /// base (genome) colour into 8 coarse groups; each reports count, mean cells/body, mean brain
+    /// complexity, and mean division-of-labor — so you can watch distinct lineages rise and fall.
+    pub fn species_json(&self) -> String {
+        const NAMES: [&str; 8] = [
+            "тёмные",
+            "синие",
+            "зелёные",
+            "бирюзовые",
+            "красные",
+            "розовые",
+            "жёлтые",
+            "светлые",
+        ];
+        let o = &self.world.orgs;
+        let mut count = [0u32; 8];
+        let mut body = [0f32; 8];
+        let mut brain = [0f32; 8];
+        let mut dols = [0f32; 8];
+        for i in 0..o.capacity() {
+            if !o.alive[i] {
+                continue;
+            }
+            let cells = &o.bodies[i].cells;
+            if cells.is_empty() {
+                continue;
+            }
+            let c0 = cells[0];
+            let bkt = (((c0.cr > 127) as usize) << 2)
+                | (((c0.cg > 127) as usize) << 1)
+                | ((c0.cb > 127) as usize);
+            count[bkt] += 1;
+            body[bkt] += cells.len() as f32;
+            brain[bkt] += o.brains[i].complexity() as f32;
+            // per-body division of labor
+            if cells.len() >= 2 {
+                let (mut d, mut pairs) = (0.0f32, 0u32);
+                for a in 0..cells.len() {
+                    for b in (a + 1)..cells.len() {
+                        let df = (cells[a].role_feed - cells[b].role_feed).abs() as f32;
+                        let ds = (cells[a].role_struct - cells[b].role_struct).abs() as f32;
+                        d += (df + ds) / 2000.0;
+                        pairs += 1;
+                    }
+                }
+                if pairs > 0 {
+                    dols[bkt] += d / pairs as f32;
+                }
+            }
+        }
+        let mut order: Vec<usize> = (0..8).filter(|&b| count[b] > 0).collect();
+        order.sort_by(|&a, &b| count[b].cmp(&count[a]));
+        let mut out = String::from("[");
+        for (k, &b) in order.iter().enumerate() {
+            if k > 0 {
+                out.push(',');
+            }
+            let n = count[b] as f32;
+            let r = if b & 4 != 0 { 210 } else { 45 };
+            let g = if b & 2 != 0 { 210 } else { 45 };
+            let bl = if b & 1 != 0 { 210 } else { 45 };
+            out.push_str(&format!(
+                "{{\"name\":\"{}\",\"count\":{},\"body\":{:.1},\"brain\":{:.1},\"dol\":{:.2},\"r\":{},\"g\":{},\"b\":{}}}",
+                NAMES[b], count[b], body[b] / n, brain[b] / n, dols[b] / n, r, g, bl
+            ));
+        }
+        out.push(']');
+        out
+    }
+
     // --- presets ----------------------------------------------------------
 
     pub fn preset_count() -> u32 {

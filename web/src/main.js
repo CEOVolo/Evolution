@@ -394,6 +394,7 @@ async function main() {
     const d = sim.deaths_recent();
     $("deaths").textContent = `голод ${d[0]} · старость ${d[1]} · съедены ${d[3]} · стёрты ${d[2]}`;
 
+    updateSpecies();
     if (followId !== null) updateFollow();
   }
 
@@ -428,6 +429,28 @@ async function main() {
       ? bodyCard(info, "")
       : '<div class="empty">Здесь пусто.</div>';
   }
+  function updateSpecies() {
+    let arr;
+    try {
+      arr = JSON.parse(sim.species_json());
+    } catch {
+      return;
+    }
+    if (!arr.length) {
+      $("species").innerHTML = '<span style="color:var(--muted2)">—</span>';
+      return;
+    }
+    $("species").innerHTML = arr
+      .map(
+        (s) =>
+          `<div class="row" style="margin:0">
+             <span><span class="swatch" style="background:rgb(${s.r},${s.g},${s.b})"></span>${s.name}</span>
+             <span class="mono" style="color:var(--muted2)">${s.count} · 🧫${s.body.toFixed(1)} · 🧠${s.brain.toFixed(0)} · DOL ${s.dol.toFixed(2)}</span>
+           </div>`
+      )
+      .join("");
+  }
+
   function updateFollow() {
     const info = sim.by_id(followId);
     if (!info.length) {
