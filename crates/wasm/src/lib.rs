@@ -460,6 +460,10 @@ impl Sim {
     pub fn set_eat_rate(&mut self, raw: i32) {
         self.set_param(ParamId::EatRate, raw as i64);
     }
+    /// Predation bite strength — the pressure under which being big (multicellular) pays.
+    pub fn set_bite_amount(&mut self, raw: i32) {
+        self.set_param(ParamId::BiteAmount, raw as i64);
+    }
     pub fn set_bloom_rate(&mut self, per_ten_thousand: i32) {
         self.set_param(ParamId::BloomEventRate, per_ten_thousand as i64);
     }

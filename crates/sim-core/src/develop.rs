@@ -29,9 +29,6 @@ const SITES: usize = SIDE * SIDE;
 const D: u32 = 10;
 /// Hard cap on cells per body.
 const CELL_CAP: usize = 48;
-/// Developmental floor: every body grows at least this many cells if there is room (a minimum
-/// viable body, so the mechanism is visible and selection has bodies to act on from generation 0).
-const MIN_CELLS: usize = 3;
 
 /// Morphogen diffusion divisor (donate `conc/DDIV` to each existing neighbour; `>= 4`).
 const DDIV: i64 = 4;
@@ -132,7 +129,7 @@ pub fn develop_body(
 
     let mut occ = vec![-1i32; SITES]; // site -> DevCell index, or -1
     let mut morph = vec![0i64; N_MORPH * SITES];
-    let mut cells: Vec<DevCell> = Vec::with_capacity(MIN_CELLS.max(4));
+    let mut cells: Vec<DevCell> = Vec::with_capacity(8);
 
     // Zygote at origin, with the maternal bolus in channel 0.
     cells.push(DevCell {
@@ -226,13 +223,6 @@ pub fn develop_body(
             if dec.divide && alive_count(&cells) < CELL_CAP {
                 let (dx, dy) = DIRS[dec.dir];
                 try_divide(&mut cells, &mut occ, &mut morph, ci, clu + dx, clv + dy);
-            }
-        }
-
-        // developmental floor: force one polarity-aligned division until MIN_CELLS is reached.
-        while alive_count(&cells) < MIN_CELLS {
-            if !force_division(&mut cells, &mut occ, &mut morph, pxa, pya) {
-                break; // no room anywhere
             }
         }
 
@@ -366,39 +356,6 @@ fn try_divide(
     occ[s] = idx as i32;
     morph[s] += ASYM_INCREMENT;
     true
-}
-
-/// The developmental floor: divide the first alive cell (canonical order) that has an empty
-/// in-bounds neighbour, choosing the neighbour best aligned with the polarity axis.
-fn force_division(
-    cells: &mut Vec<DevCell>,
-    occ: &mut [i32],
-    morph: &mut [i64],
-    pxa: f32,
-    pya: f32,
-) -> bool {
-    for &ci in &canonical_order(cells) {
-        let (lu, lv) = (cells[ci].lu, cells[ci].lv);
-        let mut best_dir: Option<usize> = None;
-        let mut best_score = f32::NEG_INFINITY;
-        for (k, (dx, dy)) in DIRS.iter().enumerate() {
-            let (nu, nv) = (lu + dx, lv + dy);
-            if in_bounds(nu, nv) && occ[site(nu, nv)] < 0 {
-                let score = *dx as f32 * pxa + *dy as f32 * pya;
-                if score > best_score {
-                    best_score = score;
-                    best_dir = Some(k);
-                }
-            }
-        }
-        if let Some(k) = best_dir {
-            let (dx, dy) = DIRS[k];
-            if try_divide(cells, occ, morph, ci, lu + dx, lv + dy) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// One integer, mass-conserving diffusion pass on the bounded lattice with zero-flux boundaries:

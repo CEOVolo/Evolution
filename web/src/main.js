@@ -57,7 +57,7 @@ async function main() {
 
   // --- state ---
   let playing = true;
-  let speed = 4;
+  let speed = 2;
   let brush = "observe";
   let colorBy = "role";
   let followId = null;
@@ -90,6 +90,7 @@ async function main() {
   $("mut").oninput = (e) => sim.set_mutation_rate(+e.target.value);
   $("regrow").oninput = (e) => sim.set_field_regrow(+e.target.value);
   $("eat").oninput = (e) => sim.set_eat_rate(+e.target.value);
+  $("bite").oninput = (e) => sim.set_bite_amount(+e.target.value);
   $("bloomrate").oninput = (e) => sim.set_bloom_rate(+e.target.value);
 
   // presets

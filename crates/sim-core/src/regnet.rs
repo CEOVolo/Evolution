@@ -66,9 +66,11 @@ impl RegNet {
         N_DEV_IN + N_DEV_OUT + self.n_hidden as usize
     }
 
-    /// A minimal founder GRN: a few random input→output links, no hidden nodes. Founders wire
-    /// mostly from the positional cues (clock/morphogens/degree/axis) so development has something
-    /// to read from the start; whatever program grows on top is left to selection.
+    /// A minimal founder GRN. **Founders cannot divide**: the divide output is left unwired with a
+    /// strongly negative bias, so a founder develops into a single cell. Multicellularity is not
+    /// given — it must EVOLVE (a mutation that wires an input into the divide output, or drives its
+    /// bias positive, and only spreads if being bigger pays). The other outputs wire from the
+    /// positional cues so differentiation has something to read once bodies do appear.
     pub fn random_minimal(rng: &mut Pcg32) -> RegNet {
         let total = N_DEV_IN + N_DEV_OUT;
         let mut r = RegNet {
@@ -77,6 +79,15 @@ impl RegNet {
             conns: Vec::new(),
         };
         for o in 0..N_DEV_OUT {
+            if o == DOUT_DIVIDE {
+                // Founders are single-celled: with no incoming edge, the divide output is
+                // tanh(-0.6) < the divide threshold, so a founder never divides. But the bias is
+                // only mildly negative, so ONE mutation (a positive-weighted edge, or a few bias
+                // jitters) can cross the threshold — division is *reachable*, not *present*.
+                // Whether such a mutant then spreads is decided by whether being bigger pays.
+                r.bias[N_DEV_IN + o] = -0.6;
+                continue;
+            }
             let n_links = 1 + rng.below(2) as usize; // 1..=2
             for _ in 0..n_links {
                 let from = rng.below(N_DEV_IN as u32);

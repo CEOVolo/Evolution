@@ -17,20 +17,20 @@ fn hash_after(seed: u64, ticks: u64) -> u64 {
 
 #[test]
 fn golden_hashes() {
-    // Stage 1 — real multicellular ALife: the unit of life is now an ORGANISM whose body is grown
-    // from one genome by a developmental regulatory network (lattice + morphogens), cells
-    // differentiate by position, and the whole body shares one energy pool. M3 bonds retired.
-    // Regenerated deliberately.
-    assert_eq!(hash_after(1, 100), 0x1dee_8c34_c240_d716, "seed=1 tick=100");
-    assert_eq!(hash_after(1, 500), 0xa4a5_c4a4_d1fe_ae7b, "seed=1 tick=500");
+    // Stage 1 (emergent): founders are SINGLE cells (a founder RegNet cannot divide), a
+    // single-cell size ceiling + predation make being big pay, so multicellularity EVOLVES instead
+    // of being forced — the world is unicellular at these early checkpoints (body == 1.0) and
+    // grows multicellular later. Regenerated deliberately.
+    assert_eq!(hash_after(1, 100), 0xd547_2569_27e2_5694, "seed=1 tick=100");
+    assert_eq!(hash_after(1, 500), 0x1d35_f1f8_0460_4e65, "seed=1 tick=500");
     assert_eq!(
         hash_after(1, 1000),
-        0x9165_576e_97fc_45c7,
+        0x9d81_695d_e8d7_9039,
         "seed=1 tick=1000"
     );
     assert_eq!(
         hash_after(2, 2000),
-        0xedd9_c107_8de8_ac73,
+        0x1b77_101b_acd2_5091,
         "seed=2 tick=2000"
     );
 }

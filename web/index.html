@@ -131,7 +131,7 @@
           <button id="reset" title="Начать новый мир с другим случайным зерном">↻ Новый мир</button>
         </div>
         <div class="tb"><label for="speed">скорость</label>
-          <input id="speed" type="range" min="1" max="20" value="4" title="Сколько шагов симуляции за кадр" /></div>
+          <input id="speed" type="range" min="1" max="20" value="2" title="Сколько шагов симуляции за кадр" /></div>
         <div class="tb"><label for="preset">старт</label>
           <select id="preset" title="Готовые наборы условий мира"></select></div>
         <div class="tb"><label for="brush">мышь</label>
@@ -160,6 +160,8 @@
           <input id="regrow" type="range" min="0" max="30" value="6" /></div>
         <div class="frow"><label title="Сколько энергии клетка тела забирает с еды">Аппетит</label>
           <input id="eat" type="range" min="5" max="150" value="60" /></div>
+        <div class="frow"><label title="Сила хищничества: крупное тело ест мелкое при касании. Это давление, под которым многоклеточность (крупнее → несъедобнее) окупается. Крути выше — многоклеточность возникает быстрее и надёжнее.">Хищничество</label>
+          <input id="bite" type="range" min="0" max="200" value="85" /></div>
         <div class="frow"><label title="Как часто сам собой возникает временный всплеск еды. 0 = только по клику кистью «☀ Вспышка еды».">Случайные вспышки</label>
           <input id="bloomrate" type="range" min="0" max="100" value="0" /></div>
       </div>

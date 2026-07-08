@@ -215,7 +215,7 @@ impl Default for WorldParams {
             sense_radius: 28.0,
             contact_radius: 5.0,
             predation_size_ratio: 1.15,
-            bite_amount: 60,
+            bite_amount: 75,
             innate_bite: 12,
             predation_gain_num: 3,
             predation_gain_den: 4,

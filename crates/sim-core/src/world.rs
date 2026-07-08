@@ -519,6 +519,54 @@ impl World {
         }
         self.orgs.energy[i] += intake;
 
+        // --- predation: a bigger body eats a smaller one it is touching. Gape-limited by total
+        // mass, with NO predator/prey flag — who eats whom falls out of evolved body size. This is
+        // the pressure under which being multicellular (hence bigger, hence hard to eat and able to
+        // eat) can pay, so multicellularity can EMERGE from single cells instead of being given. ---
+        if let Some(j) = nn {
+            if self.orgs.alive[j] {
+                let mi = self.orgs.mass_milli[i];
+                let mj = self.orgs.mass_milli[j];
+                if (mi as f32) >= (mj as f32) * p.predation_size_ratio {
+                    let dxp = self.orgs.px[j] - nx;
+                    let dyp = self.orgs.py[j] - ny;
+                    // reach grows with the two bodies' sizes (a big mouth touching a small prey)
+                    let reach = p.contact_radius + (mi + mj) as f32 / 1000.0 * 0.6;
+                    if dxp * dxp + dyp * dyp <= reach * reach {
+                        let prey_e = self.orgs.energy[j];
+                        let steal = if p.bite_amount < prey_e {
+                            p.bite_amount
+                        } else {
+                            prey_e
+                        };
+                        if steal > 0 {
+                            self.orgs.energy[j] -= steal;
+                            self.orgs.energy[i] +=
+                                steal * p.predation_gain_num / p.predation_gain_den;
+                            if self.orgs.energy[j] <= 0 {
+                                let fx = ((self.orgs.px[j] / cw) as i32).rem_euclid(gw);
+                                let fy = ((self.orgs.py[j] / ch) as i32).rem_euclid(gh);
+                                let fj = (fy * gw + fx) as usize;
+                                // deposit the prey's corpse (inlined so no &mut self method call
+                                // conflicts with the `p` borrow held across this function)
+                                let capd = p.field_cap * 4;
+                                let dep = p.death_deposit
+                                    + ((mj as f32 / 1000.0) * p.corpse_size_factor as f32) as i64;
+                                let v = self.detritus[fj] + dep;
+                                self.detritus[fj] = if v > capd { capd } else { v };
+                                events.events.push(Event::Death {
+                                    id: self.orgs.id[j],
+                                    cause: DeathCause::Predated,
+                                    tick: _tick,
+                                });
+                                self.orgs.kill(j);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // --- upkeep (per cell + whole-body) ---
         let move_cost = (sp2 * (p.move_cost_coeff as f32) * mass_units) as i64;
         let size_cost = (mass_units * p.size_upkeep as f32) as i64;
